@@ -39,6 +39,7 @@ Uso:
     python modelo.py
     python modelo.py --min-calorias 2200 --max-porciones 2
     python modelo.py --min-carbohidratos 250 --max-carbohidratos 100   (infactible)
+    python modelo.py --presupuesto 2.0 --obligatorio "Maní" --excluir "Lentejas (secas)"
 
 Requisitos:
     pip install pandas "pulp<4"
@@ -124,6 +125,19 @@ def parsear_argumentos(argv=None) -> argparse.Namespace:
         "--max-porciones", type=int, default=3,
         help="Máximo de porciones por alimento (entero, por defecto: 3).",
     )
+    # --- Restricciones opcionales ---
+    parser.add_argument(
+        "--presupuesto", type=float, default=None,
+        help="Presupuesto máximo total en costo (opcional).",
+    )
+    parser.add_argument(
+        "--obligatorio", action="append", metavar="ALIMENTO",
+        help="Alimento obligatorio, al menos 1 porción (repetible).",
+    )
+    parser.add_argument(
+        "--excluir", action="append", metavar="ALIMENTO",
+        help="Alimento excluido, 0 porciones (repetible).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -141,12 +155,46 @@ def parsear_argumentos(argv=None) -> argparse.Namespace:
     if args.max_porciones < 1:
         parser.error("--max-porciones debe ser un entero mayor o igual a 1.")
 
+    if args.presupuesto is not None and args.presupuesto < 0:
+        parser.error("--presupuesto no puede ser negativo.")
+
     return args
 
 
 # ---------------------------------------------------------------------------
 # 3. MODELO DE OPTIMIZACIÓN (MILP)
 # ---------------------------------------------------------------------------
+def resolver_indices(df: pd.DataFrame, nombres, etiqueta: str) -> list[int]:
+    """
+    Traduce nombres de alimentos a índices de fila.
+
+    La comparación ignora mayúsculas y espacios sobrantes. Lanza ValueError
+    si algún nombre no existe en alimentos.csv.
+    """
+    if not nombres:
+        return []
+
+    mapa = {
+        str(nombre).strip().lower(): i
+        for i, nombre in enumerate(df["Alimento"])
+    }
+
+    indices, desconocidos = [], []
+    for nombre in nombres:
+        clave = str(nombre).strip().lower()
+        if clave in mapa:
+            indices.append(mapa[clave])
+        else:
+            desconocidos.append(str(nombre))
+
+    if desconocidos:
+        raise ValueError(
+            f"Alimentos {etiqueta} no encontrados en alimentos.csv: {desconocidos}"
+        )
+
+    return indices
+
+
 def resolver_dieta(
     df: pd.DataFrame,
     min_calorias: float,
@@ -155,10 +203,18 @@ def resolver_dieta(
     max_carbohidratos: float,
     max_grasas: float,
     max_porciones_por_alimento: int,
+    presupuesto_maximo: float | None = None,
+    alimentos_obligatorios: list[str] | None = None,
+    alimentos_excluidos: list[str] | None = None,
 ) -> dict:
     """
     Construye y resuelve el MILP. Devuelve un dict con los resultados o
     {"estado": <estado no óptimo>} si no hay solución.
+
+    Parámetros opcionales:
+        presupuesto_maximo: cota superior del costo total (<=).
+        alimentos_obligatorios: nombres que deben comprarse al menos 1 vez.
+        alimentos_excluidos: nombres que no pueden comprarse (x_i == 0).
     """
     # LpMinimize: el solver busca el menor costo posible.
     problema = pulp.LpProblem("Problema_de_la_Dieta", pulp.LpMinimize)
@@ -205,6 +261,29 @@ def resolver_dieta(
         "Maximo_Grasas",
     )
 
+    # --- Restricciones opcionales ---
+    # 1) Presupuesto máximo: cota superior del costo total.
+    if presupuesto_maximo is not None:
+        problema += (
+            pulp.lpSum(df.loc[i, "Costo"] * x[i] for i in x) <= presupuesto_maximo,
+            "Presupuesto_Maximo",
+        )
+
+    # Traducimos nombres de alimentos a índices de variable.
+    obligatorios = resolver_indices(df, alimentos_obligatorios, "obligatorios")
+    excluidos = resolver_indices(df, alimentos_excluidos, "excluidos")
+
+    if set(obligatorios) & set(excluidos):
+        raise ValueError("Un alimento no puede ser obligatorio y excluido a la vez.")
+
+    # 2) Alimentos obligatorios: al menos una porción de cada uno.
+    for i in obligatorios:
+        problema += x[i] >= 1, f"Obligatorio_x_{i}"
+
+    # 3) Alimentos excluidos: exactamente cero porciones.
+    for i in excluidos:
+        problema += x[i] == 0, f"Excluido_x_{i}"
+
     # --- Resolución ---
     # CBC resuelve con branch-and-bound. msg=False silencia su log.
     # (No se usa threads=1: con esta versión de CBC en Windows se cuelga.)
@@ -245,6 +324,17 @@ def imprimir_resultados(resultado: dict, args: argparse.Namespace) -> None:
         f"carb [{args.min_carbohidratos:g}, {args.max_carbohidratos:g}] | "
         f"grasa<={args.max_grasas:g} | max porciones={args.max_porciones}"
     )
+
+    # Restricciones opcionales activas (si las hay).
+    extras = []
+    if args.presupuesto is not None:
+        extras.append(f"presupuesto<={args.presupuesto:g}")
+    if args.obligatorio:
+        extras.append("obligatorios=" + ", ".join(args.obligatorio))
+    if args.excluir:
+        extras.append("excluidos=" + ", ".join(args.excluir))
+    if extras:
+        print("Opcionales: " + " | ".join(extras))
     print(f"Estado de la resolución: {resultado['estado']}")
     print()
 
@@ -284,15 +374,23 @@ def main(argv=None) -> int:
     args = parsear_argumentos(argv)
     df = cargar_alimentos()
 
-    resultado = resolver_dieta(
-        df,
-        min_calorias=args.min_calorias,
-        min_proteinas=args.min_proteinas,
-        min_carbohidratos=args.min_carbohidratos,
-        max_carbohidratos=args.max_carbohidratos,
-        max_grasas=args.max_grasas,
-        max_porciones_por_alimento=args.max_porciones,
-    )
+    try:
+        resultado = resolver_dieta(
+            df,
+            min_calorias=args.min_calorias,
+            min_proteinas=args.min_proteinas,
+            min_carbohidratos=args.min_carbohidratos,
+            max_carbohidratos=args.max_carbohidratos,
+            max_grasas=args.max_grasas,
+            max_porciones_por_alimento=args.max_porciones,
+            presupuesto_maximo=args.presupuesto,
+            alimentos_obligatorios=args.obligatorio,
+            alimentos_excluidos=args.excluir,
+        )
+    except ValueError as error:
+        # Nombre de alimento inexistente o combinación contradictoria.
+        print(f"Error: {error}")
+        return 2
 
     imprimir_resultados(resultado, args)
 

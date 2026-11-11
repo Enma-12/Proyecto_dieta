@@ -14,6 +14,18 @@ Endpoint:
         }
     Respuesta: alimentos seleccionados (porciones enteras > 0) y costo total.
 
+    POST /optimizar_perfil
+    Body JSON:
+        {
+            "peso": 70,
+            "altura": 175,
+            "edad": 25,
+            "genero": "hombre",
+            "actividad": 1.55,
+            "objetivo": "musculo"
+        }
+    Calcula TMB (Mifflin-St Jeor), TDEE, macros y devuelve el mismo JSON.
+
 Ejecutar:
     pip install flask flask-cors
     python app.py
@@ -125,6 +137,18 @@ CAMPOS_NUTRICIONALES = (
 # max_porciones_por_alimento se valida aparte porque debe ser entero >= 1.
 CAMPOS_ENTRADA = CAMPOS_NUTRICIONALES + ("max_porciones_por_alimento",)
 
+# Campos del endpoint /optimizar_perfil.
+CAMPOS_PERFIL = ("peso", "altura", "edad", "genero", "actividad", "objetivo")
+
+GENEROS_VALIDOS = ("hombre", "mujer")
+
+# Ajuste calórico diario (kcal) según el objetivo del usuario.
+AJUSTE_POR_OBJETIVO = {
+    "adelgazar": -500,
+    "mantener": 0,
+    "musculo": 500,
+}
+
 NUTRIENTES = ("Calorias", "Proteinas", "Carbohidratos", "Grasas")
 
 MENSAJE_IMPOSSIBLE = (
@@ -227,9 +251,157 @@ def validar_parametros(payload) -> dict:
     return valores
 
 
+def leer_parametros_opcionales(payload) -> dict:
+    """
+    Lee y valida los campos opcionales del body:
+        presupuesto_maximo, alimentos_obligatorios, alimentos_excluidos.
+    Devuelve solo las claves presentes para poder hacer **kwargs.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    opcionales = {}
+
+    # presupuesto_maximo: numérico y >= 0
+    if payload.get("presupuesto_maximo") is not None:
+        try:
+            presupuesto = float(payload["presupuesto_maximo"])
+        except (TypeError, ValueError):
+            raise ValueError("El campo 'presupuesto_maximo' debe ser numérico.") from None
+        if presupuesto < 0:
+            raise ValueError("El campo 'presupuesto_maximo' no puede ser negativo.")
+        opcionales["presupuesto_maximo"] = presupuesto
+
+    # listas de nombres de alimentos
+    for campo in ("alimentos_obligatorios", "alimentos_excluidos"):
+        if payload.get(campo) is None:
+            continue
+        lista = payload[campo]
+        if not isinstance(lista, list):
+            raise ValueError(f"El campo '{campo}' debe ser una lista de nombres.")
+        nombres = []
+        for nombre in lista:
+            if not isinstance(nombre, str) or not nombre.strip():
+                raise ValueError(
+                    f"El campo '{campo}' solo admite nombres de alimentos no vacíos."
+                )
+            nombres.append(nombre.strip())
+        opcionales[campo] = nombres
+
+    return opcionales
+
+
+# ---------------------------------------------------------------------------
+# 3-bis. PERFIL ANTROPOMÉTRICO -> PARÁMETROS DEL MODELO
+# ---------------------------------------------------------------------------
+def calcular_parametros_desde_perfil(payload) -> dict:
+    """
+    Traduce un perfil (peso, altura, edad, género, actividad, objetivo) en
+    los 6 parámetros que consume resolver_dieta().
+
+    Fórmulas:
+      TMB (Mifflin-St Jeor):
+          hombre: 10*peso + 6.25*altura - 5*edad + 5
+          mujer : 10*peso + 6.25*altura - 5*edad - 161
+      TDEE = TMB * actividad
+      min_calorias = TDEE + ajuste(objetivo)   [-500 / 0 / +500]
+      min_proteinas = peso * 2.0 g
+      max_grasas = (min_calorias * 0.25) / 9 g  (25% de las kcal en grasa)
+      calorias_restantes = min_calorias - proteinas*4 - grasas*9
+      min_carbohidratos = calorias_restantes / 4 g
+      max_carbohidratos = min_carbohidratos + 50 g (holgura)
+      max_porciones_por_alimento = 3
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("El cuerpo de la petición debe ser un objeto JSON.")
+
+    faltantes = [campo for campo in CAMPOS_PERFIL if campo not in payload]
+    if faltantes:
+        raise ValueError(f"Faltan campos obligatorios: {faltantes}")
+
+    # --- Campos numéricos: peso, altura, edad y factor de actividad ---
+    numeros = {}
+    for campo in ("peso", "altura", "edad", "actividad"):
+        try:
+            valor = float(payload[campo])
+        except (TypeError, ValueError):
+            raise ValueError(f"El campo '{campo}' debe ser numérico.") from None
+        if valor <= 0:
+            raise ValueError(f"El campo '{campo}' debe ser mayor que cero.")
+        numeros[campo] = valor
+
+    # --- Enumeraciones: género y objetivo ---
+    genero = str(payload["genero"]).strip().lower()
+    if genero not in GENEROS_VALIDOS:
+        raise ValueError(
+            f"El campo 'genero' debe ser uno de: {list(GENEROS_VALIDOS)}."
+        )
+
+    objetivo = str(payload["objetivo"]).strip().lower()
+    if objetivo not in AJUSTE_POR_OBJETIVO:
+        raise ValueError(
+            f"El campo 'objetivo' debe ser uno de: {list(AJUSTE_POR_OBJETIVO)}."
+        )
+
+    # --- 1. TMB (Mifflin-St Jeor) ---
+    tmb = 10 * numeros["peso"] + 6.25 * numeros["altura"] - 5 * numeros["edad"]
+    tmb += 5 if genero == "hombre" else -161
+
+    # --- 2. Gasto calórico total diario (TDEE) ---
+    tdee = tmb * numeros["actividad"]
+
+    # --- 3. Ajuste según objetivo -> calorías objetivo ---
+    min_calorias = tdee + AJUSTE_POR_OBJETIVO[objetivo]
+
+    # --- 4. Reparto de macronutrientes ---
+    min_proteinas = numeros["peso"] * 2.0
+    max_grasas = (min_calorias * 0.25) / 9
+    calorias_restantes = min_calorias - (min_proteinas * 4) - (max_grasas * 9)
+    min_carbohidratos = calorias_restantes / 4
+    max_carbohidratos = min_carbohidratos + 50
+
+    return {
+        "min_calorias": round(min_calorias, 2),
+        "min_proteinas": round(min_proteinas, 2),
+        "min_carbohidratos": round(min_carbohidratos, 2),
+        "max_carbohidratos": round(max_carbohidratos, 2),
+        "max_grasas": round(max_grasas, 2),
+        "max_porciones_por_alimento": 3,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 4. MODELO DE OPTIMIZACIÓN (MILP)
 # ---------------------------------------------------------------------------
+def resolver_indices(df: pd.DataFrame, nombres, etiqueta: str) -> list[int]:
+    """
+    Traduce nombres de alimentos a índices de fila (sin distinguir mayúsculas
+    ni espacios sobrantes). Lanza ValueError si alguno no existe.
+    """
+    if not nombres:
+        return []
+
+    mapa = {
+        str(nombre).strip().lower(): i
+        for i, nombre in enumerate(df["Alimento"])
+    }
+
+    indices, desconocidos = [], []
+    for nombre in nombres:
+        clave = str(nombre).strip().lower()
+        if clave in mapa:
+            indices.append(mapa[clave])
+        else:
+            desconocidos.append(str(nombre))
+
+    if desconocidos:
+        raise ValueError(
+            f"Alimentos {etiqueta} no encontrados en alimentos.csv: {desconocidos}"
+        )
+
+    return indices
+
+
 def resolver_dieta(
     min_calorias,
     min_proteinas,
@@ -237,6 +409,9 @@ def resolver_dieta(
     max_carbohidratos,
     max_grasas,
     max_porciones_por_alimento,
+    presupuesto_maximo=None,
+    alimentos_obligatorios=None,
+    alimentos_excluidos=None,
 ) -> dict:
     """
     Construye y resuelve el MILP.
@@ -296,6 +471,29 @@ def resolver_dieta(
         pulp.lpSum(df.loc[i, "Grasas"] * x[i] for i in x) <= max_grasas,
         "Maximo_Grasas",
     )
+
+    # --- Restricciones opcionales ---
+    # 1) Presupuesto máximo: cota superior del costo total.
+    if presupuesto_maximo is not None:
+        problema += (
+            pulp.lpSum(df.loc[i, "Costo"] * x[i] for i in x) <= presupuesto_maximo,
+            "Presupuesto_Maximo",
+        )
+
+    # Traducimos nombres de alimentos a índices de variable.
+    obligatorios = resolver_indices(df, alimentos_obligatorios, "obligatorios")
+    excluidos = resolver_indices(df, alimentos_excluidos, "excluidos")
+
+    if set(obligatorios) & set(excluidos):
+        raise ValueError("Un alimento no puede ser obligatorio y excluido a la vez.")
+
+    # 2) Alimentos obligatorios: al menos una porción de cada uno.
+    for i in obligatorios:
+        problema += x[i] >= 1, f"Obligatorio_x_{i}"
+
+    # 3) Alimentos excluidos: exactamente cero porciones.
+    for i in excluidos:
+        problema += x[i] == 0, f"Excluido_x_{i}"
 
     # --- Resolución ---
     # CBC aplica branch-and-bound sobre la relajación lineal. msg=False
@@ -360,7 +558,10 @@ def optimizar():
     payload = request.get_json(silent=True)  # None si el body no es JSON
 
     try:
-        parametros = validar_parametros(payload)
+        parametros = {
+            **validar_parametros(payload),
+            **leer_parametros_opcionales(payload),
+        }
         resultado = resolver_dieta(**parametros)
     except ValueError as error:
         # Error de entrada del cliente: 400.
@@ -374,6 +575,36 @@ def optimizar():
         return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
     except pulp.PulpSolverError as error:
         # Falla interna del solver (no del modelo): 500.
+        return jsonify({"error": f"Error del solver: {error}"}), 500
+
+    return jsonify(resultado), 200
+
+
+@app.post("/optimizar_perfil")
+def optimizar_perfil():
+    """
+    Calcula los parámetros nutricionales desde un perfil antropométrico
+    (TMB Mifflin-St Jeor, TDEE, ajuste por objetivo y reparto de macros) y
+    resuelve el mismo MILP que /optimizar.
+    """
+    payload = request.get_json(silent=True)  # None si el body no es JSON
+
+    try:
+        parametros = {
+            **calcular_parametros_desde_perfil(payload),
+            **leer_parametros_opcionales(payload),
+        }
+        resultado = resolver_dieta(**parametros)
+    except ValueError as error:
+        # Datos faltantes o inválidos: 400.
+        return jsonify({"error": str(error)}), 400
+    except ModeloNoOptimo as error:
+        # Perfil válido pero metas imposibles con los alimentos actuales.
+        app.logger.warning(
+            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+        )
+        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
+    except pulp.PulpSolverError as error:
         return jsonify({"error": f"Error del solver: {error}"}), 500
 
     return jsonify(resultado), 200
