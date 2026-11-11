@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#101b2d">
+    <title>NutriCost | Optimizador de Menús</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="#">
+                <span class="brand-mark">N</span>
+                <span>Nutri<span class="brand-accent">Cost</span></span>
+            </a>
+            <div class="topbar-tag"><span class="status-dot"></span> SISTEMA DE OPTIMIZACIÓN MILP</div>
+        </div>
+    </header>
+
+    <main class="page-shell">
+        <section class="hero">
+            <div>
+                <p class="eyebrow">INVESTIGACIÓN DE OPERACIONES</p>
+                <h1>Optimizador de costos de menú</h1>
+                <p class="hero-copy">Encuentra una combinación de alimentos que cumpla tus objetivos nutricionales al menor costo estimado.</p>
+            </div>
+            <div class="hero-icon" aria-hidden="true">✳</div>
+        </section>
+
+        <section class="workspace">
+            <aside class="panel form-panel">
+                <div class="section-heading">
+                    <div>
+                        <span class="step-label">PASO 01</span>
+                        <h2>Parámetros nutricionales</h2>
+                    </div>
+                    <span class="heading-icon">⚙</span>
+                </div>
+                <p class="muted">Define los límites que debe cumplir la combinación de alimentos.</p>
+
+                <form id="diet-form">
+                    <div class="form-grid">
+                        <div class="input-group">
+                            <label for="min_calorias">Calorías mínimas <span>kcal</span></label>
+                            <input type="number" id="min_calorias" value="1250" min="0" step="any" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="min_proteinas">Proteínas mínimas <span>g</span></label>
+                            <input type="number" id="min_proteinas" value="110" min="0" step="any" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="min_carbohidratos">Carbohidratos mínimos <span>g</span></label>
+                            <input type="number" id="min_carbohidratos" value="200" min="0" step="any" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="max_carbohidratos">Carbohidratos máximos <span>g</span></label>
+                            <input type="number" id="max_carbohidratos" value="250" min="0" step="any" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="max_grasas">Grasas máximas <span>g</span></label>
+                            <input type="number" id="max_grasas" value="25" min="0" step="any" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="max_porciones_por_alimento">Máx. porciones por alimento</label>
+                            <input type="number" id="max_porciones_por_alimento" value="3" min="1" step="1" required>
+                        </div>
+                    </div>
+
+                    <div class="unit-note">
+                        <span>ⓘ</span>
+                        <p>Una porción equivale a <strong>100 gramos</strong>. Los costos se interpretan como precio por cada 100 gramos.</p>
+                    </div>
+
+                    <button type="submit" id="btn-optimizar">
+                        <span class="button-text">Calcular menú óptimo</span>
+                        <span class="button-arrow">→</span>
+                    </button>
+                    <p id="form-error" class="form-error" role="alert"></p>
+                </form>
+            </aside>
+
+            <section class="results-column">
+                <div class="panel welcome-panel" id="welcome">
+                    <div class="welcome-symbol">⌁</div>
+                    <h2>Tu análisis comienza aquí</h2>
+                    <p>Configura tus objetivos nutricionales y calcula la combinación de alimentos de menor costo.</p>
+                    <div class="welcome-points">
+                        <span>✓ Optimización MILP</span>
+                        <span>✓ Análisis nutricional</span>
+                        <span>✓ Control de costos</span>
+                    </div>
+                </div>
+
+                <div id="results" class="results-content hidden">
+                    <div class="section-heading results-title">
+                        <div>
+                            <span class="step-label">PASO 02</span>
+                            <h2>Resumen de resultados</h2>
+                        </div>
+                        <span id="status-pill" class="status-pill">ÓPTIMO</span>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <article class="kpi-card cost-card">
+                            <div class="kpi-top"><span>Costo mínimo estimado</span><span class="kpi-icon">$</span></div>
+                            <strong id="costo-total">$0.00</strong>
+                            <small>Según los precios registrados</small>
+                        </article>
+                        <article class="kpi-card">
+                            <div class="kpi-top"><span>Alimentos seleccionados</span><span class="kpi-icon green">✳</span></div>
+                            <strong id="cantidad-alimentos">0</strong>
+                            <small>Productos en la combinación</small>
+                        </article>
+                        <article class="kpi-card">
+                            <div class="kpi-top"><span>Peso total</span><span class="kpi-icon blue">↗</span></div>
+                            <strong id="peso-total">0 g</strong>
+                            <small>Cantidad total recomendada por el modelo</small>
+                        </article>
+                    </div>
+
+                    <article class="panel table-panel">
+                        <div class="section-heading">
+                            <div>
+                                <span class="step-label">DETALLE</span>
+                                <h2>Cesta de alimentos</h2>
+                            </div>
+                            <span class="mini-tag">Porciones de 100 g</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="tabla-resultados">
+                                <thead>
+                                    <tr>
+                                        <th>Alimento</th>
+                                        <th>Porciones</th>
+                                        <th>Cantidad</th>
+                                        <th>Costo</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </article>
+
+                    <div class="charts-grid">
+                        <article class="panel chart-panel">
+                            <div class="chart-heading">
+                                <div>
+                                    <span class="step-label">NUTRICIÓN</span>
+                                    <h2>Cumplimiento de objetivos</h2>
+                                </div>
+                            </div>
+                            <p class="chart-description">Porcentaje respecto al mínimo o límite establecido para cada nutriente.</p>
+                            <div class="chart-wrap"><canvas id="chartNutrientes"></canvas></div>
+                            <div class="chart-legend"><span><i class="legend-dot green-dot"></i> Dentro del objetivo</span><span><i class="legend-dot orange-dot"></i> Revisar límite</span></div>
+                        </article>
+
+                        <article class="panel chart-panel">
+                            <div class="chart-heading">
+                                <div>
+                                    <span class="step-label">PRESUPUESTO</span>
+                                    <h2>Distribución de costos</h2>
+                                </div>
+                            </div>
+                            <p class="chart-description">Participación de cada alimento en el costo total.</p>
+                            <div class="chart-wrap cost-chart-wrap"><canvas id="chartCostos"></canvas></div>
+                        </article>
+                    </div>
+
+                    <div class="panel nutrition-panel">
+                        <div class="section-heading">
+                            <div>
+                                <span class="step-label">DESGLOSE</span>
+                                <h2>Resumen nutricional</h2>
+                            </div>
+                        </div>
+                        <div id="nutrition-summary" class="nutrition-grid"></div>
+                    </div>
+                    <p class="disclaimer">Este resultado es una solución matemática basada en los datos y restricciones ingresados. No sustituye la evaluación de un profesional de nutrición.</p>
+                </div>
+            </section>
+        </section>
+        <footer>NutriCost <span>·</span> Proyecto académico de Investigación de Operaciones</footer>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>
