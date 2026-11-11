@@ -81,6 +81,22 @@ from flask_cors import CORS
 #    "Infeasible". Eso NO es un error del programa: es un resultado
 #    matemático válido que la API reporta como 422.
 # ===========================================================================
+# NOTA METODOLÓGICA: ESCALABILIDAD DE HORIZONTE TEMPORAL (DÍA vs. COMIDA)
+# ===========================================================================
+# El modelo de optimización lineal es agnóstico al periodo evaluado.
+# La función objetivo (Minimizar Costo) y las restricciones nutricionales
+# operan sobre el vector de parámetros recibido en la petición HTTP:
+#
+# 1. OPTIMIZACIÓN DIARIA TOTAL:
+#    El usuario ingresa las metas globales de 24 horas
+#    (Ej: 2500 kcal, 130g proteína, 250g-350g carbs, 70g grasa, M = 3 porciones).
+#    El solver calcula el presupuesto global mínimo de insumos del día.
+#
+# 2. OPTIMIZACIÓN POR COMIDA ESPECÍFICA (Desayuno / Almuerzo / Cena):
+#    El usuario desagrega sus requerimientos por plato individual
+#    (Ej. Almuerzo: 800 kcal, 45g proteína, 90g-120g carbs, 25g grasa, M = 2 porciones).
+#    El algoritmo resuelve la cesta óptima ajustada exclusivamente a esa comida.
+# ===========================================================================
 
 
 # ---------------------------------------------------------------------------
