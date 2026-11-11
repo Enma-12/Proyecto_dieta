@@ -1,9 +1,17 @@
 """
-API Flask del Problema de la Dieta.
+API Flask del Problema de la Dieta (MILP).
 
 Endpoint:
     POST /optimizar
-    Body JSON: {"min_calorias", "min_proteinas", "min_carbohidratos", "max_grasas"}
+    Body JSON:
+        {
+            "min_calorias": 2500,
+            "min_proteinas": 130,
+            "min_carbohidratos": 250,
+            "max_carbohidratos": 350,
+            "max_grasas": 70,
+            "max_porciones_por_alimento": 3
+        }
     Respuesta: alimentos seleccionados (porciones enteras > 0) y costo total.
 
 Ejecutar:
@@ -19,6 +27,62 @@ import pulp
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+# ===========================================================================
+# 0. FUNDAMENTO TEÓRICO (Investigación de Operaciones)
+# ===========================================================================
+# Este backend resuelve una variante del "Problema de la Dieta" (Stigler,
+# 1945; Dantzig, 1947) como un Programa Lineal Entero Mixto (MILP):
+#
+#   Variables:  x_i ∈ Z,  0 <= x_i <= M        (porciones del alimento i)
+#   Minimizar:  sum(Costo_i * x_i)             (función objetivo)
+#   Sujeto a:
+#       sum(Calorias_i * x_i)       >= min_calorias
+#       sum(Proteinas_i * x_i)      >= min_proteinas
+#       sum(Carbohidratos_i * x_i)  >= min_carbohidratos
+#       sum(Carbohidratos_i * x_i)  <= max_carbohidratos
+#       sum(Grasas_i * x_i)         <= max_grasas
+#       x_i <= M                    (cota superior por alimento)
+#
+# 1) FUNCIÓN OBJETIVO
+#    Es una combinación lineal de las variables: cada x_i se pondera por el
+#    costo unitario del alimento. Minimizarla equivale a encontrar la dieta
+#    más barata que cumpla los requisitos. Al ser lineal, el óptimo (en la
+#    relajación) se alcanza siempre en un vértice del politopo factible.
+#
+# 2) ¿POR QUÉ ES MILP Y NO LP?
+#    Las restricciones son lineales, pero las variables son ENTERAS: no se
+#    compran 2.37 huevos. Un MILP se resuelve con branch-and-bound:
+#       a) se resuelve la relajación lineal (x_i reales) -> cota inferior;
+#       b) si la solución tiene fracciones, se ramifica (x_i <= floor,
+#          x_i >= ceil) y se repite;
+#       c) se poda toda rama cuya cota ya supere la mejor solución entera.
+#    Consecuencia: el óptimo entero es siempre >= al óptimo continuo; la
+#    diferencia es el "costo de la integralidad".
+#
+# 3) LÍMITE SUPERIOR M (upBound)
+#    x_i <= M es una cota de caja. Se declara en la variable (upBound) en
+#    lugar de como restricción, porque así el solver la usa directamente
+#    para fijar el dominio y podar el árbol de búsqueda. Aporta:
+#       - realismo: evita dietas absurdas tipo "10 huevos al día";
+#       - eficiencia: reduce el espacio de búsqueda;
+#       - acotación: con todas las variables acotadas, el problema no puede
+#         ser no acotado (Unbounded) al minimizar.
+#
+# 4) DUALIDAD / SENSIBILIDAD
+#    En la relajación lineal, el precio sombra (variable dual) de cada
+#    restricción nutricional indica cuánto aumentaría el costo mínimo si se
+#    exigiera una unidad más de ese nutriente. Sirve para responder "¿qué
+#    nutriente me está encareciendo la dieta?".
+#
+# 5) FACTIBILIDAD
+#    Si el conjunto de restricciones se contradice (p. ej. min_carbohidratos
+#    > max_carbohidratos, o un M demasiado pequeño para alcanzar las
+#    calorías), el politopo factible es vacío y el solver devuelve
+#    "Infeasible". Eso NO es un error del programa: es un resultado
+#    matemático válido que la API reporta como 422.
+# ===========================================================================
+
+
 # ---------------------------------------------------------------------------
 # 1. CARGA DE DATOS (una sola vez al arrancar el servidor)
 # ---------------------------------------------------------------------------
@@ -33,12 +97,28 @@ COLUMNAS_REQUERIDAS = [
     "Grasas",
 ]
 
-CAMPOS_ENTRADA = ("min_calorias", "min_proteinas", "min_carbohidratos", "max_grasas")
+# Parámetros nutricionales: todos numéricos y no negativos.
+CAMPOS_NUTRICIONALES = (
+    "min_calorias",
+    "min_proteinas",
+    "min_carbohidratos",
+    "max_carbohidratos",
+    "max_grasas",
+)
+
+# max_porciones_por_alimento se valida aparte porque debe ser entero >= 1.
+CAMPOS_ENTRADA = CAMPOS_NUTRICIONALES + ("max_porciones_por_alimento",)
+
 NUTRIENTES = ("Calorias", "Proteinas", "Carbohidratos", "Grasas")
+
+MENSAJE_IMPOSSIBLE = (
+    "Tus requerimientos son matemáticamente imposibles de cumplir "
+    "con los alimentos actuales."
+)
 
 
 def cargar_alimentos() -> pd.DataFrame:
-    """Lee y valida alimentos.csv una única vez."""
+    """Lee y valida alimentos.csv una única vez al arrancar."""
     df = pd.read_csv(RUTA_DATOS)
     df.columns = [columna.strip() for columna in df.columns]
 
@@ -61,16 +141,29 @@ df = cargar_alimentos()
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 
-# CORS(app) permite peticiones desde cualquier origen (útil en desarrollo
-# mientras el frontend corre en otro puerto, p. ej. Vite o Live Server).
+# CORS(app) habilita peticiones desde cualquier origen: el frontend suele
+# correr en otro puerto (Vite 5173, Live Server 5500, etc.).
 CORS(app)
+
+
+class ModeloNoOptimo(Exception):
+    """El solver no alcanzó el óptimo (Infeasible, Undefined, etc.)."""
+
+    def __init__(self, estado: str):
+        super().__init__(estado)
+        self.estado = estado
 
 
 # ---------------------------------------------------------------------------
 # 3. VALIDACIÓN DE PARÁMETROS
 # ---------------------------------------------------------------------------
 def validar_parametros(payload) -> dict:
-    """Comprueba el JSON de entrada y devuelve los 4 valores como float."""
+    """
+    Valida el JSON de entrada y normaliza los tipos.
+
+    Devuelve un dict con los 5 parámetros nutricionales como float y
+    max_porciones_por_alimento como int, listo para **kwargs.
+    """
     if not isinstance(payload, dict):
         raise ValueError("El cuerpo de la petición debe ser un objeto JSON.")
 
@@ -79,7 +172,9 @@ def validar_parametros(payload) -> dict:
         raise ValueError(f"Faltan campos obligatorios: {faltantes}")
 
     valores = {}
-    for campo in CAMPOS_ENTRADA:
+
+    # --- Parámetros nutricionales: numéricos y >= 0 ---
+    for campo in CAMPOS_NUTRICIONALES:
         try:
             valor = float(payload[campo])
         except (TypeError, ValueError):
@@ -88,29 +183,78 @@ def validar_parametros(payload) -> dict:
             raise ValueError(f"El campo '{campo}' no puede ser negativo.")
         valores[campo] = valor
 
+    # --- max_porciones_por_alimento: entero >= 1 ---
+    crudo = payload["max_porciones_por_alimento"]
+
+    # bool es subclase de int en Python: JSON true/false no es válido aquí.
+    if isinstance(crudo, bool):
+        raise ValueError(
+            "El campo 'max_porciones_por_alimento' debe ser un número entero."
+        )
+    try:
+        porciones = float(crudo)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "El campo 'max_porciones_por_alimento' debe ser un número entero."
+        ) from None
+    if not porciones.is_integer():
+        raise ValueError(
+            "El campo 'max_porciones_por_alimento' debe ser un entero, "
+            "no un decimal."
+        )
+    if porciones < 1:
+        raise ValueError(
+            "El campo 'max_porciones_por_alimento' debe ser al menos 1."
+        )
+    valores["max_porciones_por_alimento"] = int(porciones)
+
     return valores
 
 
 # ---------------------------------------------------------------------------
-# 4. MODELO DE OPTIMIZACIÓN (misma lógica que modelo.py, con valores dinámicos)
+# 4. MODELO DE OPTIMIZACIÓN (MILP)
 # ---------------------------------------------------------------------------
-def resolver_dieta(min_calorias, min_proteinas, min_carbohidratos, max_grasas) -> dict:
-    """Resuelve el problema entero y devuelve un diccionario serializable."""
+def resolver_dieta(
+    min_calorias,
+    min_proteinas,
+    min_carbohidratos,
+    max_carbohidratos,
+    max_grasas,
+    max_porciones_por_alimento,
+) -> dict:
+    """
+    Construye y resuelve el MILP.
 
-    # Nombre único: evita que dos peticiones simultáneas compartan los
-    # archivos temporales que genera CBC.
+    Lanza ModeloNoOptimo si el solver no llega a una solución óptima.
+    Devuelve un dict serializable a JSON cuando hay óptimo.
+    """
+    # Nombre único por petición: CBC crea archivos temporales con el nombre
+    # del problema; con peticiones concurrentes un nombre fijo provocaría
+    # colisiones entre requests.
     problema = pulp.LpProblem(f"Dieta_{uuid.uuid4().hex[:8]}", pulp.LpMinimize)
 
-    # Variables enteras >= 0: número de porciones de cada alimento.
+    # --- Variables de decisión ---
+    # x_i = porciones del alimento i.
+    #   lowBound=0  -> no se compran cantidades negativas.
+    #   upBound=M    -> cota superior: ninguna dieta puede pedir más de M
+    #                   porciones del mismo alimento (restricción de caja).
+    #   cat="Integer"-> variable entera: convierte el modelo en MILP.
     x = {
-        i: pulp.LpVariable(name=f"x_{i}", lowBound=0, cat="Integer")
+        i: pulp.LpVariable(
+            name=f"x_{i}",
+            lowBound=0,
+            upBound=max_porciones_por_alimento,
+            cat="Integer",
+        )
         for i in range(len(df))
     }
 
-    # Función objetivo: minimizar el costo total.
+    # --- Función objetivo ---
+    # Minimizar el costo total: suma lineal de costo unitario * porciones.
     problema += pulp.lpSum(df.loc[i, "Costo"] * x[i] for i in x), "Costo_Total"
 
-    # Restricciones con los valores recibidos por JSON.
+    # --- Restricciones nutricionales ---
+    # Cada una es una suma ponderada (lineal) de las variables.
     problema += (
         pulp.lpSum(df.loc[i, "Calorias"] * x[i] for i in x) >= min_calorias,
         "Minimo_Calorias",
@@ -120,31 +264,42 @@ def resolver_dieta(min_calorias, min_proteinas, min_carbohidratos, max_grasas) -
         "Minimo_Proteinas",
     )
     problema += (
+        pulp.lpSum(df.loc[i, "Carbohidratos"] * x[i] for i in x)
+        >= min_carbohidratos,
+        "Minimo_Carbohidratos",
+    )
+    # Techo de carbohidratos: evita dietas "baratas" basadas solo en
+    # cereales y tubérculos, que disparan los carbohidratos muy por encima
+    # de lo razonable aunque el costo sea mínimo.
+    problema += (
+        pulp.lpSum(df.loc[i, "Carbohidratos"] * x[i] for i in x)
+        <= max_carbohidratos,
+        "Maximo_Carbohidratos",
+    )
+    problema += (
         pulp.lpSum(df.loc[i, "Grasas"] * x[i] for i in x) <= max_grasas,
         "Maximo_Grasas",
     )
-    problema += (
-        pulp.lpSum(df.loc[i, "Carbohidratos"] * x[i] for i in x) >= min_carbohidratos,
-        "Minimo_Carbohidratos",
-    )
 
-    problema.solve(pulp.PULP_CBC_CMD(msg=False, threads=1))
+    # --- Resolución ---
+    # CBC aplica branch-and-bound sobre la relajación lineal. msg=False
+    # silencia el log. (No se usa threads=1: en esta versión de CBC en
+    # Windows el solver se cuelga con ese parámetro.)
+    problema.solve(pulp.PULP_CBC_CMD(msg=False))
 
     estado = pulp.LpStatus[problema.status]
 
-    # Si no hay óptimo (infactible, ilimitado...), no hay porciones que dar.
+    # Si el politopo factible es vacío (o el modelo no se resolvió), no hay
+    # solución que reportar. Se propaga como excepción para que la capa HTTP
+    # decida el código de respuesta.
     if problema.status != pulp.LpStatusOptimal:
-        return {
-            "estado": estado,
-            "costo_total": None,
-            "alimentos": [],
-            "resumen_nutricional": None,
-        }
+        raise ModeloNoOptimo(estado)
 
-    # Porciones enteras del solver (int para no devolver 7.0).
+    # --- Extracción de resultados ---
+    # int(...) porque las variables ya son enteras (evita devolver 7.0).
     porciones = {i: int(round(x[i].value() or 0)) for i in x}
 
-    # Solo alimentos realmente comprados, con su costo unitario y subtotal.
+    # Solo alimentos efectivamente comprados (porciones > 0).
     alimentos = [
         {
             "alimento": str(df.loc[i, "Alimento"]),
@@ -156,12 +311,18 @@ def resolver_dieta(min_calorias, min_proteinas, min_carbohidratos, max_grasas) -
         if cantidad > 0
     ]
 
-    # Resumen nutricional: sirve al frontend para mostrar el cumplimiento.
-    # Se convierte a float porque pandas devuelve numpy.int64/float64 y Flask
-    # no puede serializar esos tipos a JSON.
+    # Resumen nutricional de la solución: permite al frontend mostrar el
+    # cumplimiento real de cada restricción (útil para ver holguras).
+    # float(...) porque pandas devuelve numpy.int64/float64 y Flask no los
+    # puede serializar a JSON.
     resumen = {
         nutriente: round(
-            float(sum(df.loc[i, nutriente] * cantidad for i, cantidad in porciones.items())),
+            float(
+                sum(
+                    df.loc[i, nutriente] * cantidad
+                    for i, cantidad in porciones.items()
+                )
+            ),
             2,
         )
         for nutriente in NUTRIENTES
@@ -180,21 +341,28 @@ def resolver_dieta(min_calorias, min_proteinas, min_carbohidratos, max_grasas) -
 # ---------------------------------------------------------------------------
 @app.post("/optimizar")
 def optimizar():
-    payload = request.get_json(silent=True)  # None si el body no es JSON válido
+    payload = request.get_json(silent=True)  # None si el body no es JSON
 
     try:
         parametros = validar_parametros(payload)
         resultado = resolver_dieta(**parametros)
     except ValueError as error:
+        # Error de entrada del cliente: 400.
         return jsonify({"error": str(error)}), 400
+    except ModeloNoOptimo as error:
+        # Resultado matemático válido: el sistema de restricciones es
+        # incompatible. Se registra el estado real del solver para depurar.
+        app.logger.warning(
+            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+        )
+        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
     except pulp.PulpSolverError as error:
+        # Falla interna del solver (no del modelo): 500.
         return jsonify({"error": f"Error del solver: {error}"}), 500
 
-    # 200 si hay óptimo; 422 si el modelo es infactible con esos valores.
-    codigo = 200 if resultado["estado"] == "Optimal" else 422
-    return jsonify(resultado), codigo
+    return jsonify(resultado), 200
 
 
 if __name__ == "__main__":
-    # 0.0.0.0 permite que tu compañero se conecte desde otra máquina de la red.
+    # 0.0.0.0 permite que el compañero se conecte desde otra máquina.
     app.run(host="0.0.0.0", port=5000, debug=True)
