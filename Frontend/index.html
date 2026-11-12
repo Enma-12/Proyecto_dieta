@@ -1,191 +1,264 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" class="scroll-smooth">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#101b2d">
-    <title>NutriCost | Optimizador de Menús</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#059669">
+    <title>NutriCost · Dieta óptima</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ["Inter", "system-ui", "-apple-system", "Segoe UI", "sans-serif"]
+                    },
+                    boxShadow: {
+                        card: "0 18px 40px -24px rgba(15, 23, 42, .35)"
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
-    <header class="topbar">
-        <div class="topbar-inner">
-            <a class="brand" href="#">
-                <span class="brand-mark">N</span>
-                <span>Nutri<span class="brand-accent">Cost</span></span>
-            </a>
-            <div class="topbar-tag"><span class="status-dot"></span> SISTEMA DE OPTIMIZACIÓN MILP</div>
-        </div>
-    </header>
 
-    <main class="page-shell">
-        <section class="hero">
-            <div>
-                <p class="eyebrow">INVESTIGACIÓN DE OPERACIONES</p>
-                <h1>Optimizador de costos de menú</h1>
-                <p class="hero-copy">Encuentra una combinación de alimentos que cumpla tus objetivos nutricionales al menor costo estimado.</p>
+<body class="min-h-screen bg-slate-100 text-slate-800 antialiased">
+    <div class="mx-auto w-full max-w-md px-4 pb-36 pt-6 md:max-w-2xl lg:max-w-4xl">
+
+        <!-- Cabecera -->
+        <header class="mb-6 flex items-center gap-3">
+            <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-600 text-xl text-white shadow-card">
+                🥗
             </div>
-            <div class="hero-icon" aria-hidden="true">✳</div>
-        </section>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-slate-900">NutriCost</h1>
+                <p class="text-xs text-slate-500">Tu dieta más barata y equilibrada</p>
+            </div>
+        </header>
 
-        <section class="workspace">
-            <aside class="panel form-panel">
-                <div class="section-heading">
+        <!-- Alerta -->
+        <div id="alert" role="alert" aria-live="assertive"
+             class="mb-4 hidden rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div class="flex items-start gap-2">
+                <span class="mt-0.5" aria-hidden="true">⚠️</span>
+                <span id="alert-text"></span>
+            </div>
+        </div>
+
+        <main class="space-y-5">
+
+            <!-- ============================ ZONA 1 ============================ -->
+            <section class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                <div class="mb-5 flex items-center gap-3">
+                    <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">1</span>
                     <div>
-                        <span class="step-label">PASO 01</span>
-                        <h2>Parámetros nutricionales</h2>
-                    </div>
-                    <span class="heading-icon">⚙</span>
-                </div>
-                <p class="muted">Define los límites que debe cumplir la combinación de alimentos.</p>
-
-                <form id="diet-form">
-                    <div class="form-grid">
-                        <div class="input-group">
-                            <label for="min_calorias">Calorías mínimas <span>kcal</span></label>
-                            <input type="number" id="min_calorias" value="1250" min="0" step="any" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="min_proteinas">Proteínas mínimas <span>g</span></label>
-                            <input type="number" id="min_proteinas" value="110" min="0" step="any" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="min_carbohidratos">Carbohidratos mínimos <span>g</span></label>
-                            <input type="number" id="min_carbohidratos" value="200" min="0" step="any" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="max_carbohidratos">Carbohidratos máximos <span>g</span></label>
-                            <input type="number" id="max_carbohidratos" value="250" min="0" step="any" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="max_grasas">Grasas máximas <span>g</span></label>
-                            <input type="number" id="max_grasas" value="25" min="0" step="any" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="max_porciones_por_alimento">Máx. porciones por alimento</label>
-                            <input type="number" id="max_porciones_por_alimento" value="3" min="1" step="1" required>
-                        </div>
-                    </div>
-
-                    <div class="unit-note">
-                        <span>ⓘ</span>
-                        <p>Una porción equivale a <strong>100 gramos</strong>. Los costos se interpretan como precio por cada 100 gramos.</p>
-                    </div>
-
-                    <button type="submit" id="btn-optimizar">
-                        <span class="button-text">Calcular menú óptimo</span>
-                        <span class="button-arrow">→</span>
-                    </button>
-                    <p id="form-error" class="form-error" role="alert"></p>
-                </form>
-            </aside>
-
-            <section class="results-column">
-                <div class="panel welcome-panel" id="welcome">
-                    <div class="welcome-symbol">⌁</div>
-                    <h2>Tu análisis comienza aquí</h2>
-                    <p>Configura tus objetivos nutricionales y calcula la combinación de alimentos de menor costo.</p>
-                    <div class="welcome-points">
-                        <span>✓ Optimización MILP</span>
-                        <span>✓ Análisis nutricional</span>
-                        <span>✓ Control de costos</span>
+                        <h2 class="text-base font-semibold text-slate-900">Perfil físico</h2>
+                        <p class="text-xs text-slate-500">Desliza para ajustar tus datos</p>
                     </div>
                 </div>
 
-                <div id="results" class="results-content hidden">
-                    <div class="section-heading results-title">
-                        <div>
-                            <span class="step-label">PASO 02</span>
-                            <h2>Resumen de resultados</h2>
+                <!-- Sliders -->
+                <div class="space-y-5">
+                    <div>
+                        <div class="mb-1 flex items-baseline justify-between">
+                            <label for="peso" class="text-sm font-medium text-slate-600">Peso</label>
+                            <output id="peso-val" for="peso" class="text-sm font-bold text-emerald-700">70 kg</output>
                         </div>
-                        <span id="status-pill" class="status-pill">ÓPTIMO</span>
+                        <input id="peso" type="range" min="40" max="150" step="1" value="70" data-unit="kg">
                     </div>
 
-                    <div class="kpi-grid">
-                        <article class="kpi-card cost-card">
-                            <div class="kpi-top"><span>Costo mínimo estimado</span><span class="kpi-icon">$</span></div>
-                            <strong id="costo-total">$0.00</strong>
-                            <small>Según los precios registrados</small>
-                        </article>
-                        <article class="kpi-card">
-                            <div class="kpi-top"><span>Alimentos seleccionados</span><span class="kpi-icon green">✳</span></div>
-                            <strong id="cantidad-alimentos">0</strong>
-                            <small>Productos en la combinación</small>
-                        </article>
-                        <article class="kpi-card">
-                            <div class="kpi-top"><span>Peso total</span><span class="kpi-icon blue">↗</span></div>
-                            <strong id="peso-total">0 g</strong>
-                            <small>Cantidad total recomendada por el modelo</small>
-                        </article>
+                    <div>
+                        <div class="mb-1 flex items-baseline justify-between">
+                            <label for="altura" class="text-sm font-medium text-slate-600">Altura</label>
+                            <output id="altura-val" for="altura" class="text-sm font-bold text-emerald-700">175 cm</output>
+                        </div>
+                        <input id="altura" type="range" min="140" max="210" step="1" value="175" data-unit="cm">
                     </div>
 
-                    <article class="panel table-panel">
-                        <div class="section-heading">
-                            <div>
-                                <span class="step-label">DETALLE</span>
-                                <h2>Cesta de alimentos</h2>
-                            </div>
-                            <span class="mini-tag">Porciones de 100 g</span>
+                    <div>
+                        <div class="mb-1 flex items-baseline justify-between">
+                            <label for="edad" class="text-sm font-medium text-slate-600">Edad</label>
+                            <output id="edad-val" for="edad" class="text-sm font-bold text-emerald-700">25 años</output>
                         </div>
-                        <div class="table-wrap">
-                            <table id="tabla-resultados">
-                                <thead>
-                                    <tr>
-                                        <th>Alimento</th>
-                                        <th>Porciones</th>
-                                        <th>Cantidad</th>
-                                        <th>Costo</th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
-                        </div>
-                    </article>
-
-                    <div class="charts-grid">
-                        <article class="panel chart-panel">
-                            <div class="chart-heading">
-                                <div>
-                                    <span class="step-label">NUTRICIÓN</span>
-                                    <h2>Cumplimiento de objetivos</h2>
-                                </div>
-                            </div>
-                            <p class="chart-description">Porcentaje respecto al mínimo o límite establecido para cada nutriente.</p>
-                            <div class="chart-wrap"><canvas id="chartNutrientes"></canvas></div>
-                            <div class="chart-legend"><span><i class="legend-dot green-dot"></i> Dentro del objetivo</span><span><i class="legend-dot orange-dot"></i> Revisar límite</span></div>
-                        </article>
-
-                        <article class="panel chart-panel">
-                            <div class="chart-heading">
-                                <div>
-                                    <span class="step-label">PRESUPUESTO</span>
-                                    <h2>Distribución de costos</h2>
-                                </div>
-                            </div>
-                            <p class="chart-description">Participación de cada alimento en el costo total.</p>
-                            <div class="chart-wrap cost-chart-wrap"><canvas id="chartCostos"></canvas></div>
-                        </article>
+                        <input id="edad" type="range" min="14" max="80" step="1" value="25" data-unit="años">
                     </div>
+                </div>
 
-                    <div class="panel nutrition-panel">
-                        <div class="section-heading">
-                            <div>
-                                <span class="step-label">DESGLOSE</span>
-                                <h2>Resumen nutricional</h2>
-                            </div>
-                        </div>
-                        <div id="nutrition-summary" class="nutrition-grid"></div>
+                <!-- Género -->
+                <fieldset class="mt-6">
+                    <legend class="mb-2 text-sm font-medium text-slate-600">Género</legend>
+                    <div class="flex gap-2">
+                        <button type="button" class="chip flex-1 rounded-full px-4 py-2 text-sm font-medium ring-1"
+                                data-group="genero" data-value="hombre" aria-pressed="true">Hombre</button>
+                        <button type="button" class="chip flex-1 rounded-full px-4 py-2 text-sm font-medium ring-1"
+                                data-group="genero" data-value="mujer" aria-pressed="false">Mujer</button>
                     </div>
-                    <p class="disclaimer">Este resultado es una solución matemática basada en los datos y restricciones ingresados. No sustituye la evaluación de un profesional de nutrición.</p>
+                </fieldset>
+
+                <!-- Objetivo -->
+                <fieldset class="mt-5">
+                    <legend class="mb-2 text-sm font-medium text-slate-600">Objetivo</legend>
+                    <div class="flex gap-2">
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="objetivo" data-value="adelgazar" aria-pressed="false">Adelgazar</button>
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="objetivo" data-value="mantener" aria-pressed="true">Mantener</button>
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="objetivo" data-value="musculo" aria-pressed="false">Músculo</button>
+                    </div>
+                </fieldset>
+
+                <!-- Actividad -->
+                <fieldset class="mt-5">
+                    <legend class="mb-2 text-sm font-medium text-slate-600">Nivel de actividad</legend>
+                    <div class="space-y-2">
+                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                                data-group="actividad" data-value="1.2" aria-pressed="false">
+                            Poco o ningún ejercicio (Sentado)
+                        </button>
+                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                                data-group="actividad" data-value="1.375" aria-pressed="false">
+                            Ejercicio ligero (1-3 días a la semana, ej. Jardinería)
+                        </button>
+                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                                data-group="actividad" data-value="1.55" aria-pressed="true">
+                            Ejercicio moderado (3-5 días a la semana, ej. Trotar)
+                        </button>
+                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                                data-group="actividad" data-value="1.725" aria-pressed="false">
+                            Ejercicio fuerte (6-7 días a la semana, ej. Correr)
+                        </button>
+                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                                data-group="actividad" data-value="1.9" aria-pressed="false">
+                            Ejercicio muy fuerte (Dos veces al día, ej. Natación)
+                        </button>
+                    </div>
+                </fieldset>
+            </section>
+
+            <!-- ============================ ZONA 2 ============================ -->
+            <section class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                <div class="mb-5 flex items-center gap-3">
+                    <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">2</span>
+                    <div>
+                        <h2 class="text-base font-semibold text-slate-900">Tus reglas</h2>
+                        <p class="text-xs text-slate-500">Ajusta el presupuesto y los alimentos</p>
+                    </div>
+                </div>
+
+                <!-- Presupuesto -->
+                <div class="mb-6">
+                    <div class="mb-1 flex items-baseline justify-between">
+                        <label for="presupuesto" class="text-sm font-medium text-slate-600">Presupuesto máximo</label>
+                        <output id="presupuesto-val" for="presupuesto" class="text-sm font-bold text-emerald-700">$5.00</output>
+                    </div>
+                    <input id="presupuesto" type="range" min="1" max="20" step="0.5" value="5">
+                    <p class="mt-1 text-[11px] text-slate-400">Costo total que no puede superar la cesta.</p>
+                </div>
+
+                <!-- Obligatorios -->
+                <div class="mb-4">
+                    <label class="mb-2 block text-sm font-medium text-slate-600" for="obligatorios-toggle">
+                        Alimentos obligatorios
+                    </label>
+                    <div class="relative" data-multiselect="obligatorios">
+                        <button type="button" id="obligatorios-toggle" aria-expanded="false"
+                                class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
+                            <span id="obligatorios-label" class="truncate">Ninguno seleccionado</span>
+                            <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+                            </svg>
+                        </button>
+                        <div id="obligatorios-panel"
+                             class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
+                            <input id="obligatorios-search" type="search" placeholder="Buscar alimento…"
+                                   class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
+                            <div id="obligatorios-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
+                        </div>
+                        <div id="obligatorios-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+                    </div>
+                </div>
+
+                <!-- Excluidos -->
+                <div>
+                    <label class="mb-2 block text-sm font-medium text-slate-600" for="excluidos-toggle">
+                        Alimentos excluidos
+                    </label>
+                    <div class="relative" data-multiselect="excluidos">
+                        <button type="button" id="excluidos-toggle" aria-expanded="false"
+                                class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
+                            <span id="excluidos-label" class="truncate">Ninguno seleccionado</span>
+                            <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+                            </svg>
+                        </button>
+                        <div id="excluidos-panel"
+                             class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
+                            <input id="excluidos-search" type="search" placeholder="Buscar alimento…"
+                                   class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
+                            <div id="excluidos-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
+                        </div>
+                        <div id="excluidos-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+                    </div>
                 </div>
             </section>
-        </section>
-        <footer>NutriCost <span>·</span> Proyecto académico de Investigación de Operaciones</footer>
-    </main>
+
+            <!-- ============================ ZONA 3 ============================ -->
+            <section id="results" class="hidden space-y-4">
+                <div class="flex items-center gap-3">
+                    <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">3</span>
+                    <div>
+                        <h2 class="text-base font-semibold text-slate-900">Cesta óptima</h2>
+                        <p class="text-xs text-slate-500">La combinación más económica para tu perfil</p>
+                    </div>
+                </div>
+
+                <!-- Resumen -->
+                <div class="rounded-3xl bg-gradient-to-br from-emerald-600 to-teal-700 p-5 text-white shadow-card">
+                    <p class="text-[11px] uppercase tracking-widest text-emerald-100">Costo total estimado</p>
+                    <p id="res-costo" class="mt-1 text-3xl font-bold">$0.00</p>
+
+                    <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div class="rounded-2xl bg-white/10 px-3 py-2">
+                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Calorías</p>
+                            <p id="res-calorias" class="text-sm font-semibold">0 kcal</p>
+                        </div>
+                        <div class="rounded-2xl bg-white/10 px-3 py-2">
+                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Proteínas</p>
+                            <p id="res-proteinas" class="text-sm font-semibold">0 g</p>
+                        </div>
+                        <div class="rounded-2xl bg-white/10 px-3 py-2">
+                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Carbohidratos</p>
+                            <p id="res-carbohidratos" class="text-sm font-semibold">0 g</p>
+                        </div>
+                        <div class="rounded-2xl bg-white/10 px-3 py-2">
+                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Grasas</p>
+                            <p id="res-grasas" class="text-sm font-semibold">0 g</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tarjetas -->
+                <div id="cards" class="grid grid-cols-1 gap-3 sm:grid-cols-2"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Botón flotante -->
+    <div class="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/70 bg-white/90 backdrop-blur pb-safe">
+        <div class="mx-auto w-full max-w-md px-4 pt-3 md:max-w-2xl lg:max-w-4xl">
+            <button id="btn-calcular" type="button"
+                    class="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3.5 text-base font-semibold text-white shadow-card transition hover:bg-emerald-700 active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60">
+                <span id="btn-spinner"
+                      class="hidden h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                      aria-hidden="true"></span>
+                <span id="btn-text">Calcular dieta óptima</span>
+                <span aria-hidden="true">→</span>
+            </button>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>

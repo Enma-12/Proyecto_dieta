@@ -580,6 +580,12 @@ def optimizar():
     return jsonify(resultado), 200
 
 
+@app.get("/alimentos")
+def listar_alimentos():
+    """Devuelve los nombres de alimentos disponibles para los selectores."""
+    return jsonify({"alimentos": [str(nombre) for nombre in df["Alimento"]]}), 200
+
+
 @app.post("/optimizar_perfil")
 def optimizar_perfil():
     """

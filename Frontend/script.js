@@ -1,300 +1,443 @@
-// NutriCost - frontend de la API Flask
-let nutrientesChart = null;
-let costosChart = null;
+/* ---------------------------------------------------------------------------
+   NutriCost · lógica del frontend
+   ---------------------------------------------------------------------------
+   - Carga los alimentos desde GET /alimentos y llena los multiselects.
+   - Gestiona sliders y chips (estado activo).
+   - Envía el perfil a POST /optimizar_perfil y renderiza la cesta óptima.
+   --------------------------------------------------------------------------- */
 
-const API_URL = "http://127.0.0.1:5000/optimizar";
-const MONEDA = "USD"; // Cambia a VES si tus precios están en bolívares.
-const GRAMOS_POR_PORCION = 100; // Una porción del backend equivale a 100 g.
+"use strict";
 
-const form = document.getElementById("diet-form");
-const button = document.getElementById("btn-optimizar");
-const errorBox = document.getElementById("form-error");
+const API_BASE = "http://127.0.0.1:5000";
+const URL_ALIMENTOS = `${API_BASE}/alimentos`;
+const URL_OPTIMIZAR = `${API_BASE}/optimizar_perfil`;
 
-const money = (value) => new Intl.NumberFormat("es-VE", {
+const state = {
+    genero: "hombre",
+    objetivo: "mantener",
+    actividad: 1.55,
+    obligatorios: new Set(),
+    excluidos: new Set(),
+};
+
+const CHIP_ACTIVE = [
+    "bg-emerald-600",
+    "text-white",
+    "ring-emerald-600",
+    "shadow-sm",
+];
+const CHIP_INACTIVE = [
+    "bg-white",
+    "text-slate-600",
+    "ring-slate-200",
+    "hover:border-emerald-300",
+    "hover:text-emerald-700",
+];
+
+const money = new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: MONEDA,
-    minimumFractionDigits: 2
-}).format(Number(value) || 0);
-
-const number = (value, decimals = 1) => new Intl.NumberFormat("es-VE", {
-    maximumFractionDigits: decimals
-}).format(Number(value) || 0);
-
-form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    errorBox.textContent = "";
-
-    const datos = {
-        min_calorias: Number(document.getElementById("min_calorias").value),
-        min_proteinas: Number(document.getElementById("min_proteinas").value),
-        min_carbohidratos: Number(document.getElementById("min_carbohidratos").value),
-        max_carbohidratos: Number(document.getElementById("max_carbohidratos").value),
-        max_grasas: Number(document.getElementById("max_grasas").value),
-        max_porciones_por_alimento: Number(document.getElementById("max_porciones_por_alimento").value)
-    };
-
-    if (datos.min_carbohidratos > datos.max_carbohidratos) {
-        errorBox.textContent = "El mínimo de carbohidratos no puede ser mayor que el máximo.";
-        return;
-    }
-
-    if (!Number.isInteger(datos.max_porciones_por_alimento) ||
-        datos.max_porciones_por_alimento < 1) {
-        errorBox.textContent = "El máximo de porciones debe ser un número entero mayor que cero.";
-        return;
-    }
-
-    button.disabled = true;
-    button.querySelector(".button-text").textContent = "Calculando menú...";
-    button.querySelector(".button-arrow").textContent = "…";
-
-    try {
-        const response = await fetch(API_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(datos)
-        });
-
-        const resultado = await response.json();
-
-        if (!response.ok) {
-            throw new Error(resultado.error || "No se pudo calcular el menú.");
-        }
-
-        mostrarResultados(resultado, datos);
-    } catch (error) {
-        console.error("Error al optimizar:", error);
-        errorBox.textContent = error.message.includes("Failed to fetch")
-            ? "No se pudo conectar con Flask. Comprueba que app.py esté ejecutándose en el puerto 5000."
-            : error.message;
-    } finally {
-        button.disabled = false;
-        button.querySelector(".button-text").textContent = "Calcular menú óptimo";
-        button.querySelector(".button-arrow").textContent = "→";
-    }
+    currency: "USD",
+    minimumFractionDigits: 2,
 });
 
-function mostrarResultados(data, metas) {
-    if (!data || data.estado !== "Optimal" || !Array.isArray(data.alimentos)) {
-        throw new Error("La respuesta del servidor no tiene el formato esperado.");
+const numberFmt = (value, decimals = 0) =>
+    new Intl.NumberFormat("es-VE", {
+        maximumFractionDigits: decimals,
+    }).format(Number(value) || 0);
+
+const multiselects = {};
+
+document.addEventListener("DOMContentLoaded", init);
+
+function init() {
+    bindSliders();
+    bindChips();
+    initMultiselect("obligatorios");
+    initMultiselect("excluidos");
+    document.getElementById("btn-calcular").addEventListener("click", calcularDieta);
+    cargarAlimentos();
+}
+
+/* ===========================================================================
+   Sliders
+   =========================================================================== */
+function bindSliders() {
+    document.querySelectorAll('input[type="range"]').forEach((input) => {
+        const render = () => actualizarSlider(input);
+        input.addEventListener("input", render);
+        render();
+    });
+}
+
+function actualizarSlider(input) {
+    const output = document.getElementById(`${input.id}-val`);
+    const value = Number(input.value);
+
+    if (output) {
+        output.textContent =
+            input.id === "presupuesto"
+                ? money.format(value)
+                : `${numberFmt(value)} ${input.dataset.unit || ""}`.trim();
     }
 
-    document.getElementById("welcome").classList.add("hidden");
-    document.getElementById("results").classList.remove("hidden");
-
-    document.getElementById("costo-total").textContent = money(data.costo_total);
-    document.getElementById("cantidad-alimentos").textContent =
-        number(data.alimentos.length, 0);
-
-    const pesoTotal = data.alimentos.reduce(
-        (total, item) => total + Number(item.porciones || 0) * GRAMOS_POR_PORCION,
-        0
-    );
-    document.getElementById("peso-total").textContent = `${number(pesoTotal, 0)} g`;
-
-    renderizarTabla(data.alimentos);
-    renderizarResumenNutricional(data.resumen_nutricional, metas);
-    renderizarGraficoNutrientes(data.resumen_nutricional, metas);
-    renderizarGraficoCostos(data.alimentos);
+    const min = Number(input.min);
+    const max = Number(input.max);
+    const porcentaje = max > min ? ((value - min) / (max - min)) * 100 : 0;
+    input.style.setProperty("--fill", `${porcentaje}%`);
 }
 
-function renderizarTabla(alimentos) {
-    const tbody = document.querySelector("#tabla-resultados tbody");
-    tbody.replaceChildren();
+/* ===========================================================================
+   Chips
+   =========================================================================== */
+function bindChips() {
+    document.querySelectorAll(".chip[data-group]").forEach((chip) => {
+        chip.addEventListener("click", () => seleccionarChip(chip));
+        aplicarEstadoChip(chip, chip.getAttribute("aria-pressed") === "true");
+    });
+}
 
-    alimentos.forEach((item) => {
-        const tr = document.createElement("tr");
-        const valores = [
-            item.alimento,
-            `${Number(item.porciones)} × ${GRAMOS_POR_PORCION} g`,
-            `${number(Number(item.porciones || 0) * GRAMOS_POR_PORCION, 0)} g`,
-            money(item.costo_subtotal)
-        ];
+function seleccionarChip(chip) {
+    const grupo = chip.dataset.group;
+    const valor = chip.dataset.value;
 
-        valores.forEach((valor) => {
-            const td = document.createElement("td");
-            td.textContent = valor;
-            tr.appendChild(td);
+    state[grupo] = grupo === "actividad" ? Number(valor) : valor;
+
+    document.querySelectorAll(`.chip[data-group="${grupo}"]`).forEach((otro) => {
+        aplicarEstadoChip(otro, otro === chip);
+    });
+}
+
+function aplicarEstadoChip(chip, activo) {
+    chip.setAttribute("aria-pressed", String(activo));
+    chip.classList.remove(...CHIP_ACTIVE, ...CHIP_INACTIVE);
+    chip.classList.add(...(activo ? CHIP_ACTIVE : CHIP_INACTIVE));
+}
+
+/* ===========================================================================
+   Multiselects
+   =========================================================================== */
+function initMultiselect(kind) {
+    const cfg = {
+        kind,
+        root: document.querySelector(`[data-multiselect="${kind}"]`),
+        toggle: document.getElementById(`${kind}-toggle`),
+        panel: document.getElementById(`${kind}-panel`),
+        list: document.getElementById(`${kind}-list`),
+        search: document.getElementById(`${kind}-search`),
+        label: document.getElementById(`${kind}-label`),
+        chips: document.getElementById(`${kind}-chips`),
+        other: kind === "obligatorios" ? "excluidos" : "obligatorios",
+    };
+    multiselects[kind] = cfg;
+
+    cfg.toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        togglePanel(kind);
+    });
+    cfg.panel.addEventListener("click", (event) => event.stopPropagation());
+    cfg.search.addEventListener("input", () => filtrarLista(kind));
+
+    renderSeleccion(kind);
+}
+
+function togglePanel(kind) {
+    const cfg = multiselects[kind];
+    const abrir = cfg.panel.classList.contains("hidden");
+
+    cerrarPaneles();
+
+    if (abrir) {
+        cfg.panel.classList.remove("hidden");
+        cfg.toggle.setAttribute("aria-expanded", "true");
+        cfg.search.focus();
+    }
+}
+
+function cerrarPaneles() {
+    Object.values(multiselects).forEach((cfg) => {
+        cfg.panel.classList.add("hidden");
+        cfg.toggle.setAttribute("aria-expanded", "false");
+    });
+}
+
+document.addEventListener("click", cerrarPaneles);
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") cerrarPaneles();
+});
+
+function llenarLista(kind, alimentos) {
+    const cfg = multiselects[kind];
+    cfg.list.replaceChildren();
+
+    if (!alimentos.length) {
+        const vacio = document.createElement("p");
+        vacio.className = "px-2 py-3 text-sm text-slate-400";
+        vacio.textContent = "No hay alimentos disponibles.";
+        cfg.list.appendChild(vacio);
+        return;
+    }
+
+    alimentos.forEach((nombre) => {
+        const label = document.createElement("label");
+        label.className =
+            "flex cursor-pointer items-center gap-2 rounded-xl px-2 py-2 text-sm text-slate-700 transition hover:bg-slate-50";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = nombre;
+        checkbox.className =
+            "h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500";
+
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) {
+                state[kind].add(nombre);
+                // Un alimento no puede estar en ambas listas.
+                if (state[cfg.other].has(nombre)) {
+                    state[cfg.other].delete(nombre);
+                    sincronizarCheckbox(cfg.other, nombre, false);
+                    renderSeleccion(cfg.other);
+                }
+            } else {
+                state[kind].delete(nombre);
+            }
+            renderSeleccion(kind);
         });
 
-        tbody.appendChild(tr);
+        const texto = document.createElement("span");
+        texto.className = "truncate";
+        texto.textContent = nombre;
+
+        label.append(checkbox, texto);
+        cfg.list.appendChild(label);
     });
 }
 
-function obtenerMetricas(nutrientes, metas) {
-    const calorias = Number(nutrientes.Calorias || 0);
-    const proteinas = Number(nutrientes.Proteinas || 0);
-    const carbos = Number(nutrientes.Carbohidratos || 0);
-    const grasas = Number(nutrientes.Grasas || 0);
-
-    return [
-        {
-            nombre: "Calorías",
-            valor: calorias,
-            unidad: "kcal",
-            referencia: metas.min_calorias,
-            porcentaje: metas.min_calorias > 0 ? calorias / metas.min_calorias * 100 : 0,
-            cumple: calorias >= metas.min_calorias,
-            regla: `Mínimo ${number(metas.min_calorias)} kcal`,
-            tipo: "mínimo"
-        },
-        {
-            nombre: "Proteínas",
-            valor: proteinas,
-            unidad: "g",
-            referencia: metas.min_proteinas,
-            porcentaje: metas.min_proteinas > 0 ? proteinas / metas.min_proteinas * 100 : 0,
-            cumple: proteinas >= metas.min_proteinas,
-            regla: `Mínimo ${number(metas.min_proteinas)} g`,
-            tipo: "mínimo"
-        },
-        {
-            nombre: "Carbohidratos",
-            valor: carbos,
-            unidad: "g",
-            referencia: metas.max_carbohidratos,
-            porcentaje: metas.max_carbohidratos > 0 ? carbos / metas.max_carbohidratos * 100 : 0,
-            cumple: carbos >= metas.min_carbohidratos && carbos <= metas.max_carbohidratos,
-            regla: `${number(metas.min_carbohidratos)}–${number(metas.max_carbohidratos)} g`,
-            tipo: "rango"
-        },
-        {
-            nombre: "Grasas",
-            valor: grasas,
-            unidad: "g",
-            referencia: metas.max_grasas,
-            porcentaje: metas.max_grasas > 0 ? grasas / metas.max_grasas * 100 : 0,
-            cumple: grasas <= metas.max_grasas,
-            regla: `Máximo ${number(metas.max_grasas)} g`,
-            tipo: "máximo"
+function sincronizarCheckbox(kind, nombre, marcado) {
+    multiselects[kind].list.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+        if (box.value === nombre) {
+            box.checked = marcado;
         }
-    ];
+    });
 }
 
-function renderizarResumenNutricional(nutrientes, metas) {
-    const contenedor = document.getElementById("nutrition-summary");
+function renderSeleccion(kind) {
+    const cfg = multiselects[kind];
+    const nombres = [...state[kind]];
+
+    if (nombres.length === 0) {
+        cfg.label.textContent = "Ninguno seleccionado";
+    } else if (nombres.length === 1) {
+        cfg.label.textContent = nombres[0];
+    } else {
+        cfg.label.textContent = `${nombres.length} seleccionados`;
+    }
+
+    cfg.chips.replaceChildren();
+
+    nombres.forEach((nombre) => {
+        const chip = document.createElement("span");
+        chip.className =
+            "inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-100";
+
+        const texto = document.createElement("span");
+        texto.className = "truncate";
+        texto.textContent = nombre;
+
+        const quitar = document.createElement("button");
+        quitar.type = "button";
+        quitar.setAttribute("aria-label", `Quitar ${nombre}`);
+        quitar.className = "shrink-0 text-emerald-600 transition hover:text-emerald-900";
+        quitar.textContent = "×";
+        quitar.addEventListener("click", () => {
+            state[kind].delete(nombre);
+            sincronizarCheckbox(kind, nombre, false);
+            renderSeleccion(kind);
+        });
+
+        chip.append(texto, quitar);
+        cfg.chips.appendChild(chip);
+    });
+}
+
+function filtrarLista(kind) {
+    const cfg = multiselects[kind];
+    const termino = cfg.search.value.trim().toLowerCase();
+
+    cfg.list.querySelectorAll("label").forEach((label) => {
+        const coincide = label.textContent.toLowerCase().includes(termino);
+        label.classList.toggle("hidden", termino !== "" && !coincide);
+    });
+}
+
+/* ===========================================================================
+   API
+   =========================================================================== */
+async function cargarAlimentos() {
+    try {
+        const response = await fetch(URL_ALIMENTOS);
+        if (!response.ok) {
+            throw new Error("No se pudo cargar la lista de alimentos.");
+        }
+        const data = await response.json();
+        const alimentos = Array.isArray(data.alimentos) ? data.alimentos : [];
+
+        llenarLista("obligatorios", alimentos);
+        llenarLista("excluidos", alimentos);
+    } catch (error) {
+        console.error("Error al cargar alimentos:", error);
+        mostrarAlerta(
+            "No se pudo cargar la lista de alimentos. Verifica que app.py esté ejecutándose en el puerto 5000."
+        );
+    }
+}
+
+async function calcularDieta() {
+    ocultarAlerta();
+
+    const payload = {
+        peso: Number(document.getElementById("peso").value),
+        altura: Number(document.getElementById("altura").value),
+        edad: Number(document.getElementById("edad").value),
+        genero: state.genero,
+        actividad: state.actividad,
+        objetivo: state.objetivo,
+        presupuesto_maximo: Number(document.getElementById("presupuesto").value),
+        alimentos_obligatorios: [...state.obligatorios],
+        alimentos_excluidos: [...state.excluidos],
+    };
+
+    setCargando(true);
+
+    try {
+        const response = await fetch(URL_OPTIMIZAR, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(
+                data.mensaje || data.error || `Error ${response.status} al calcular la dieta.`
+            );
+        }
+
+        if (data.estado !== "Optimal" || !Array.isArray(data.alimentos)) {
+            throw new Error("La respuesta del servidor no tiene el formato esperado.");
+        }
+
+        renderResultados(data);
+    } catch (error) {
+        console.error("Error al optimizar:", error);
+        const esConexion = error instanceof TypeError;
+        mostrarAlerta(
+            esConexion
+                ? "No se pudo conectar con el servidor. Verifica que app.py esté ejecutándose en el puerto 5000."
+                : error.message
+        );
+    } finally {
+        setCargando(false);
+    }
+}
+
+/* ===========================================================================
+   Render
+   =========================================================================== */
+function renderResultados(data) {
+    const macro = data.resumen_nutricional || {};
+
+    document.getElementById("res-costo").textContent = money.format(
+        Number(data.costo_total) || 0
+    );
+    document.getElementById("res-calorias").textContent = `${numberFmt(macro.Calorias)} kcal`;
+    document.getElementById("res-proteinas").textContent = `${numberFmt(macro.Proteinas)} g`;
+    document.getElementById("res-carbohidratos").textContent = `${numberFmt(macro.Carbohidratos)} g`;
+    document.getElementById("res-grasas").textContent = `${numberFmt(macro.Grasas)} g`;
+
+    const contenedor = document.getElementById("cards");
     contenedor.replaceChildren();
 
-    obtenerMetricas(nutrientes, metas).forEach((m) => {
-        const item = document.createElement("div");
-        item.className = "nutrient-item";
-
-        const nombre = document.createElement("span");
-        nombre.className = "nutrient-name";
-        nombre.textContent = m.nombre;
-
-        const valor = document.createElement("strong");
-        valor.className = "nutrient-value";
-        valor.textContent = `${number(m.valor)} ${m.unidad}`;
-
-        const objetivo = document.createElement("span");
-        objetivo.className = "nutrient-target";
-        objetivo.textContent = m.regla;
-
-        const estado = document.createElement("span");
-        estado.className = `nutrient-state ${m.cumple ? "" : "warning"}`;
-        estado.textContent = m.cumple ? "✓ Dentro del objetivo" : "⚠ Fuera del objetivo";
-
-        item.append(nombre, valor, objetivo, estado);
-        contenedor.appendChild(item);
+    data.alimentos.forEach((item, index) => {
+        contenedor.appendChild(crearTarjeta(item, index));
     });
+
+    const results = document.getElementById("results");
+    results.classList.remove("hidden");
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function renderizarGraficoNutrientes(nutrientes, metas) {
-    const canvas = document.getElementById("chartNutrientes");
-    if (nutrientesChart) nutrientesChart.destroy();
+function crearTarjeta(item, index) {
+    const porciones = Number(item.porciones) || 0;
+    const gramos = porciones * 100;
 
-    const metricas = obtenerMetricas(nutrientes, metas);
-    const colores = metricas.map(m => m.cumple ? "#20a675" : "#ed9b42");
+    const card = document.createElement("article");
+    card.className =
+        "food-card rounded-2xl bg-white p-4 shadow-card ring-1 ring-slate-100";
+    card.style.animationDelay = `${Math.min(index * 45, 270)}ms`;
 
-    nutrientesChart = new Chart(canvas, {
-        type: "bar",
-        data: {
-            labels: metricas.map(m => m.nombre),
-            datasets: [{
-                label: "Porcentaje del objetivo",
-                data: metricas.map(m => Number(m.porcentaje.toFixed(1))),
-                backgroundColor: colores,
-                borderRadius: 7,
-                borderSkipped: false,
-                barThickness: 22
-            }]
-        },
-        options: {
-            indexAxis: "y",
-            maintainAspectRatio: false,
-            responsive: true,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        label: (context) => {
-                            const m = metricas[context.dataIndex];
-                            return ` ${number(m.porcentaje)}% · ${number(m.valor)} ${m.unidad} (${m.regla})`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    beginAtZero: true,
-                    suggestedMax: 120,
-                    grid: { color: "#edf1f4" },
-                    ticks: { callback: value => `${value}%`, color: "#8792a2", font: { size: 10 } }
-                },
-                y: {
-                    grid: { display: false },
-                    ticks: { color: "#536174", font: { size: 11, weight: "600" } }
-                }
-            }
-        }
-    });
+    const cabecera = document.createElement("div");
+    cabecera.className = "flex items-start justify-between gap-3";
+
+    const nombre = document.createElement("h3");
+    nombre.className = "text-sm font-semibold leading-snug text-slate-800";
+    nombre.textContent = item.alimento;
+
+    const subtotal = document.createElement("span");
+    subtotal.className =
+        "shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700";
+    subtotal.textContent = money.format(Number(item.costo_subtotal) || 0);
+
+    cabecera.append(nombre, subtotal);
+
+    const datos = document.createElement("div");
+    datos.className = "mt-3 grid grid-cols-2 gap-2";
+
+    datos.append(
+        crearDato("Porciones", String(porciones)),
+        crearDato("Cantidad", `${numberFmt(gramos)} g`)
+    );
+
+    card.append(cabecera, datos);
+    return card;
 }
 
-function renderizarGraficoCostos(alimentos) {
-    const canvas = document.getElementById("chartCostos");
-    if (costosChart) costosChart.destroy();
+function crearDato(etiqueta, valor) {
+    const caja = document.createElement("div");
+    caja.className = "rounded-xl bg-slate-50 px-3 py-2";
 
-    costosChart = new Chart(canvas, {
-        type: "doughnut",
-        data: {
-            labels: alimentos.map(item => item.alimento),
-            datasets: [{
-                data: alimentos.map(item => Number(item.costo_subtotal)),
-                backgroundColor: [
-                    "#20a675", "#3984d6", "#edaa45", "#8066c7",
-                    "#e47765", "#43aeb0", "#718096", "#b1c66b"
-                ],
-                borderColor: "#ffffff",
-                borderWidth: 3,
-                hoverOffset: 7
-            }]
-        },
-        options: {
-            maintainAspectRatio: false,
-            responsive: true,
-            cutout: "66%",
-            plugins: {
-                legend: {
-                    position: "bottom",
-                    labels: {
-                        usePointStyle: true,
-                        pointStyle: "circle",
-                        padding: 13,
-                        color: "#687588",
-                        font: { size: 10 }
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: (context) => {
-                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                            const porcentaje = total ? context.raw / total * 100 : 0;
-                            return ` ${money(context.raw)} · ${number(porcentaje)}%`;
-                        }
-                    }
-                }
-            }
-        }
-    });
+    const titulo = document.createElement("span");
+    titulo.className = "block text-[10px] uppercase tracking-wide text-slate-400";
+    titulo.textContent = etiqueta;
+
+    const contenido = document.createElement("strong");
+    contenido.className = "text-sm text-slate-700";
+    contenido.textContent = valor;
+
+    caja.append(titulo, contenido);
+    return caja;
+}
+
+/* ===========================================================================
+   Estado de UI
+   =========================================================================== */
+function setCargando(cargando) {
+    const boton = document.getElementById("btn-calcular");
+    const spinner = document.getElementById("btn-spinner");
+    const texto = document.getElementById("btn-text");
+
+    boton.disabled = cargando;
+    spinner.classList.toggle("hidden", !cargando);
+    texto.textContent = cargando ? "Calculando…" : "Calcular dieta óptima";
+}
+
+function mostrarAlerta(mensaje) {
+    const alerta = document.getElementById("alert");
+    document.getElementById("alert-text").textContent = mensaje;
+    alerta.classList.remove("hidden");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function ocultarAlerta() {
+    document.getElementById("alert").classList.add("hidden");
 }
