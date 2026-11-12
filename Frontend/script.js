@@ -16,6 +16,7 @@ const state = {
     genero: "hombre",
     objetivo: "mantener",
     actividad: 1.55,
+    plazo: 1,
     obligatorios: new Set(),
     excluidos: new Set(),
 };
@@ -46,6 +47,8 @@ const numberFmt = (value, decimals = 0) =>
     }).format(Number(value) || 0);
 
 const multiselects = {};
+let ultimoResultado = null;
+let macroChart = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -59,31 +62,90 @@ function init() {
 }
 
 /* ===========================================================================
-   Sliders
+   Sliders + inputs numéricos (sincronización bidireccional)
    =========================================================================== */
+const GRUPOS_NUMERICOS = ["actividad", "plazo"];
+
 function bindSliders() {
-    document.querySelectorAll('input[type="range"]').forEach((input) => {
-        const render = () => actualizarSlider(input);
-        input.addEventListener("input", render);
-        render();
+    document.querySelectorAll('input[type="range"]').forEach((range) => {
+        const numero = document.getElementById(`${range.id}-val`);
+
+        range.addEventListener("input", () => sincronizarDesdeSlider(range));
+
+        if (numero) {
+            // Mientras escribe no forzamos el rango: evita pelear con el teclado
+            // (p. ej. al teclear "55" el "5" intermedio no debe saltar a 40).
+            numero.addEventListener("input", () => aplicarValorDesdeNumero(range, numero, false));
+            numero.addEventListener("change", () => aplicarValorDesdeNumero(range, numero, true));
+            numero.addEventListener("blur", () => aplicarValorDesdeNumero(range, numero, true));
+            numero.addEventListener("keydown", (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    numero.blur();
+                }
+            });
+        }
+
+        sincronizarDesdeSlider(range);
     });
 }
 
-function actualizarSlider(input) {
-    const output = document.getElementById(`${input.id}-val`);
-    const value = Number(input.value);
+function esPresupuesto(range) {
+    return range.id === "presupuesto";
+}
 
-    if (output) {
-        output.textContent =
-            input.id === "presupuesto"
-                ? money.format(value)
-                : `${numberFmt(value)} ${input.dataset.unit || ""}`.trim();
+function formatearValor(range, valor) {
+    return esPresupuesto(range)
+        ? Number(valor).toFixed(2)
+        : String(Math.round(Number(valor)));
+}
+
+function actualizarRelleno(range) {
+    const min = Number(range.min);
+    const max = Number(range.max);
+    const valor = Number(range.value);
+    const porcentaje = max > min ? ((valor - min) / (max - min)) * 100 : 0;
+    range.style.setProperty("--fill", `${Math.min(100, Math.max(0, porcentaje))}%`);
+}
+
+function sincronizarDesdeSlider(range) {
+    const numero = document.getElementById(`${range.id}-val`);
+    if (numero) {
+        numero.value = formatearValor(range, range.value);
+    }
+    actualizarRelleno(range);
+}
+
+function aplicarValorDesdeNumero(range, numero, ajustar) {
+    if (numero.value.trim() === "") {
+        // Campo vacío: al confirmar (blur/change) restauramos el valor del slider.
+        if (ajustar) sincronizarDesdeSlider(range);
+        return;
     }
 
-    const min = Number(input.min);
-    const max = Number(input.max);
-    const porcentaje = max > min ? ((value - min) / (max - min)) * 100 : 0;
-    input.style.setProperty("--fill", `${porcentaje}%`);
+    let valor = Number(numero.value);
+    if (!Number.isFinite(valor)) {
+        if (ajustar) sincronizarDesdeSlider(range);
+        return;
+    }
+
+    const min = Number(range.min);
+    const max = Number(range.max);
+
+    if (ajustar) {
+        valor = Math.min(max, Math.max(min, valor));
+    } else if (valor < min || valor > max) {
+        // Fuera de rango mientras escribe: esperamos a que termine.
+        return;
+    }
+
+    range.value = String(valor);
+    actualizarRelleno(range);
+
+    if (ajustar) {
+        // El <input type="range"> ajusta al step: reflejamos su valor real.
+        numero.value = formatearValor(range, range.value);
+    }
 }
 
 /* ===========================================================================
@@ -100,11 +162,17 @@ function seleccionarChip(chip) {
     const grupo = chip.dataset.group;
     const valor = chip.dataset.value;
 
-    state[grupo] = grupo === "actividad" ? Number(valor) : valor;
+    state[grupo] = GRUPOS_NUMERICOS.includes(grupo) ? Number(valor) : valor;
 
     document.querySelectorAll(`.chip[data-group="${grupo}"]`).forEach((otro) => {
         aplicarEstadoChip(otro, otro === chip);
     });
+
+    // Si ya hay una cesta en pantalla, refrescamos el multiplicador sin
+    // volver a llamar al backend (que siempre trabaja a 1 día).
+    if (grupo === "plazo" && ultimoResultado) {
+        renderResultados(ultimoResultado, { scroll: false });
+    }
 }
 
 function aplicarEstadoChip(chip, activo) {
@@ -344,32 +412,126 @@ async function calcularDieta() {
 /* ===========================================================================
    Render
    =========================================================================== */
-function renderResultados(data) {
-    const macro = data.resumen_nutricional || {};
+function renderResultados(data, { scroll = true } = {}) {
+    ultimoResultado = data;
 
-    document.getElementById("res-costo").textContent = money.format(
-        Number(data.costo_total) || 0
-    );
-    document.getElementById("res-calorias").textContent = `${numberFmt(macro.Calorias)} kcal`;
-    document.getElementById("res-proteinas").textContent = `${numberFmt(macro.Proteinas)} g`;
-    document.getElementById("res-carbohidratos").textContent = `${numberFmt(macro.Carbohidratos)} g`;
-    document.getElementById("res-grasas").textContent = `${numberFmt(macro.Grasas)} g`;
+    // El backend siempre responde para 1 día: aquí aplicamos el plazo elegido
+    // (1, 7 o 30) sobre costos, macros y porciones antes de pintar.
+    const plazo = Number(state.plazo) || 1;
+    const macro = data.resumen_nutricional || {};
+    const escalar = (valor) => Math.round((Number(valor) || 0) * plazo * 100) / 100;
+
+    document.getElementById("res-costo").textContent = money.format(escalar(data.costo_total));
+    document.getElementById("res-periodo").textContent =
+        plazo === 1 ? "Total para 1 día" : `Total para ${plazo} días`;
+    document.getElementById("res-calorias").textContent = `${numberFmt(escalar(macro.Calorias))} kcal`;
+    document.getElementById("res-proteinas").textContent = `${numberFmt(escalar(macro.Proteinas))} g`;
+    document.getElementById("res-carbohidratos").textContent = `${numberFmt(escalar(macro.Carbohidratos))} g`;
+    document.getElementById("res-grasas").textContent = `${numberFmt(escalar(macro.Grasas))} g`;
+
+    // Hacemos visible la zona antes de dibujar: Chart.js necesita medir el canvas.
+    const results = document.getElementById("results");
+    results.classList.remove("hidden");
+
+    renderMacroChart({
+        proteinas: escalar(macro.Proteinas),
+        carbohidratos: escalar(macro.Carbohidratos),
+        grasas: escalar(macro.Grasas),
+    });
 
     const contenedor = document.getElementById("cards");
     contenedor.replaceChildren();
 
     data.alimentos.forEach((item, index) => {
-        contenedor.appendChild(crearTarjeta(item, index));
+        contenedor.appendChild(
+            crearTarjeta(
+                {
+                    ...item,
+                    porciones: escalar(item.porciones),
+                    costo_subtotal: escalar(item.costo_subtotal),
+                },
+                index
+            )
+        );
     });
 
-    const results = document.getElementById("results");
-    results.classList.remove("hidden");
-    results.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (scroll) {
+        results.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+}
+
+function renderMacroChart({ proteinas, carbohidratos, grasas }) {
+    const canvas = document.getElementById("macroChart");
+    if (!canvas) return;
+
+    // Si el CDN de Chart.js no cargó, el resto de la interfaz sigue funcionando.
+    if (typeof Chart === "undefined") {
+        console.warn("Chart.js no está disponible; se omite el gráfico de macros.");
+        return;
+    }
+
+    // Cada render (nuevo cálculo o cambio de plazo) recrea el gráfico.
+    if (macroChart) {
+        macroChart.destroy();
+        macroChart = null;
+    }
+
+    // Gramos -> kcal: proteína 4, carbohidratos 4, grasas 9.
+    const kcal = [
+        Math.max(0, Number(proteinas) || 0) * 4,
+        Math.max(0, Number(carbohidratos) || 0) * 4,
+        Math.max(0, Number(grasas) || 0) * 9,
+    ];
+
+    macroChart = new Chart(canvas.getContext("2d"), {
+        type: "doughnut",
+        data: {
+            labels: ["Proteínas", "Carbohidratos", "Grasas"],
+            datasets: [
+                {
+                    data: kcal,
+                    backgroundColor: ["#059669", "#34d399", "#065f46"],
+                    borderColor: "#ffffff",
+                    borderWidth: 2,
+                    hoverOffset: 8,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: "62%",
+            animation: { duration: 450 },
+            plugins: {
+                legend: {
+                    position: "bottom",
+                    labels: {
+                        usePointStyle: true,
+                        pointStyle: "circle",
+                        boxWidth: 8,
+                        boxHeight: 8,
+                        padding: 16,
+                        color: "#475569",
+                        font: { size: 11, weight: "600" },
+                    },
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (contexto) => {
+                            const datos = contexto.dataset.data || [];
+                            const total = datos.reduce((suma, valor) => suma + valor, 0) || 1;
+                            const porcentaje = Math.round((contexto.parsed / total) * 100);
+                            return ` ${contexto.label}: ${numberFmt(contexto.parsed)} kcal (${porcentaje}%)`;
+                        },
+                    },
+                },
+            },
+        },
+    });
 }
 
 function crearTarjeta(item, index) {
     const porciones = Number(item.porciones) || 0;
-    const gramos = porciones * 100;
 
     const card = document.createElement("article");
     card.className =
@@ -391,12 +553,9 @@ function crearTarjeta(item, index) {
     cabecera.append(nombre, subtotal);
 
     const datos = document.createElement("div");
-    datos.className = "mt-3 grid grid-cols-2 gap-2";
+    datos.className = "mt-3 grid grid-cols-1 gap-2";
 
-    datos.append(
-        crearDato("Porciones", String(porciones)),
-        crearDato("Cantidad", `${numberFmt(gramos)} g`)
-    );
+    datos.append(crearDato("Porciones", String(porciones)));
 
     card.append(cabecera, datos);
     return card;

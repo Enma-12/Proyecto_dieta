@@ -7,6 +7,7 @@
     <title>NutriCost · Dieta óptima</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -55,7 +56,7 @@
                     <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">1</span>
                     <div>
                         <h2 class="text-base font-semibold text-slate-900">Perfil físico</h2>
-                        <p class="text-xs text-slate-500">Desliza para ajustar tus datos</p>
+                        <p class="text-xs text-slate-500">Desliza o escribe para ajustar tus datos</p>
                     </div>
                 </div>
 
@@ -64,25 +65,40 @@
                     <div>
                         <div class="mb-1 flex items-baseline justify-between">
                             <label for="peso" class="text-sm font-medium text-slate-600">Peso</label>
-                            <output id="peso-val" for="peso" class="text-sm font-bold text-emerald-700">70 kg</output>
+                            <span class="flex items-baseline gap-1 text-sm font-bold text-emerald-700">
+                                <input id="peso-val" type="number" inputmode="decimal" min="40" max="150" step="1" value="70"
+                                       aria-label="Peso en kilogramos"
+                                       class="w-14 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                                <span aria-hidden="true">kg</span>
+                            </span>
                         </div>
-                        <input id="peso" type="range" min="40" max="150" step="1" value="70" data-unit="kg">
+                        <input id="peso" type="range" min="40" max="150" step="1" value="70">
                     </div>
 
                     <div>
                         <div class="mb-1 flex items-baseline justify-between">
                             <label for="altura" class="text-sm font-medium text-slate-600">Altura</label>
-                            <output id="altura-val" for="altura" class="text-sm font-bold text-emerald-700">175 cm</output>
+                            <span class="flex items-baseline gap-1 text-sm font-bold text-emerald-700">
+                                <input id="altura-val" type="number" inputmode="decimal" min="140" max="210" step="1" value="175"
+                                       aria-label="Altura en centímetros"
+                                       class="w-16 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                                <span aria-hidden="true">cm</span>
+                            </span>
                         </div>
-                        <input id="altura" type="range" min="140" max="210" step="1" value="175" data-unit="cm">
+                        <input id="altura" type="range" min="140" max="210" step="1" value="175">
                     </div>
 
                     <div>
                         <div class="mb-1 flex items-baseline justify-between">
                             <label for="edad" class="text-sm font-medium text-slate-600">Edad</label>
-                            <output id="edad-val" for="edad" class="text-sm font-bold text-emerald-700">25 años</output>
+                            <span class="flex items-baseline gap-1 text-sm font-bold text-emerald-700">
+                                <input id="edad-val" type="number" inputmode="decimal" min="14" max="80" step="1" value="25"
+                                       aria-label="Edad en años"
+                                       class="w-14 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                                <span aria-hidden="true">años</span>
+                            </span>
                         </div>
-                        <input id="edad" type="range" min="14" max="80" step="1" value="25" data-unit="años">
+                        <input id="edad" type="range" min="14" max="80" step="1" value="25">
                     </div>
                 </div>
 
@@ -152,11 +168,30 @@
                 <div class="mb-6">
                     <div class="mb-1 flex items-baseline justify-between">
                         <label for="presupuesto" class="text-sm font-medium text-slate-600">Presupuesto máximo</label>
-                        <output id="presupuesto-val" for="presupuesto" class="text-sm font-bold text-emerald-700">$5.00</output>
+                        <span class="flex items-baseline gap-1 text-sm font-bold text-emerald-700">
+                            <span aria-hidden="true">$</span>
+                            <input id="presupuesto-val" type="number" inputmode="decimal" min="1" max="100" step="1" value="5.00"
+                                   aria-label="Presupuesto máximo en dólares"
+                                   class="w-20 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                        </span>
                     </div>
-                    <input id="presupuesto" type="range" min="1" max="20" step="0.5" value="5">
+                    <input id="presupuesto" type="range" min="1" max="100" step="1" value="5">
                     <p class="mt-1 text-[11px] text-slate-400">Costo total que no puede superar la cesta.</p>
                 </div>
+
+                <!-- Plazo -->
+                <fieldset class="mb-6">
+                    <legend class="mb-2 text-sm font-medium text-slate-600">Plazo</legend>
+                    <div class="flex gap-2">
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="plazo" data-value="1" aria-pressed="true">1 Día</button>
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="plazo" data-value="7" aria-pressed="false">7 Días</button>
+                        <button type="button" class="chip flex-1 rounded-full px-3 py-2 text-sm font-medium ring-1"
+                                data-group="plazo" data-value="30" aria-pressed="false">30 Días</button>
+                    </div>
+                    <p class="mt-1 text-[11px] text-slate-400">El costo y los macros se multiplican por el plazo elegido.</p>
+                </fieldset>
 
                 <!-- Obligatorios -->
                 <div class="mb-4">
@@ -219,6 +254,7 @@
                 <div class="rounded-3xl bg-gradient-to-br from-emerald-600 to-teal-700 p-5 text-white shadow-card">
                     <p class="text-[11px] uppercase tracking-widest text-emerald-100">Costo total estimado</p>
                     <p id="res-costo" class="mt-1 text-3xl font-bold">$0.00</p>
+                    <p id="res-periodo" class="text-xs text-emerald-100">Total para 1 día</p>
 
                     <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                         <div class="rounded-2xl bg-white/10 px-3 py-2">
@@ -237,6 +273,18 @@
                             <p class="text-[10px] uppercase tracking-wide text-emerald-100">Grasas</p>
                             <p id="res-grasas" class="text-sm font-semibold">0 g</p>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Gráfico de macros -->
+                <div class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                    <div class="mb-3 flex items-baseline justify-between gap-3">
+                        <h3 class="text-sm font-semibold text-slate-900">Distribución de calorías</h3>
+                        <span class="text-[11px] text-slate-400">Proteínas · Carbos · Grasas</span>
+                    </div>
+                    <div class="relative mx-auto h-56 max-h-[250px] w-full">
+                        <canvas id="macroChart" role="img"
+                                aria-label="Gráfico de dona con la distribución de calorías entre proteínas, carbohidratos y grasas"></canvas>
                     </div>
                 </div>
 
