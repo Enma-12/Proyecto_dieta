@@ -520,11 +520,14 @@ function actualizarAvisoObligatorios() {
         return;
     }
 
-    // Es un aviso, no un bloqueo: el modelo puede seguir teniendo solución.
-    aviso.textContent =
-        `${total} alimentos obligatorios: cada uno exige al menos 100 g. ` +
-        "Con tantos, sus grasas o carbohidratos pueden superar los topes del " +
-        "perfil y el cálculo quedaría sin solución. Si eso pasa, quita alguno.";
+    const seleccionados = [...state.obligatorios].join(", ");
+    const maxRecomendado = 4;
+
+    aviso.innerHTML = `
+        <strong>⚠️ Tienes ${total} alimentos obligatorios seleccionados:</strong> ${seleccionados}.
+        <br>Si el costo o los macronutrientes (grasas, carbohidratos, proteínas) superan tus límites, el sistema no podrá calcular la dieta.
+        <br>Te recomendamos seleccionar <strong>máximo ${maxRecomendado}</strong>.
+    `;
     aviso.classList.remove("hidden");
 }
 
