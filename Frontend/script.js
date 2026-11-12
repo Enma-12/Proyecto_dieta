@@ -20,6 +20,7 @@ const MENSAJE_PRESUPUESTO_UI =
 const TASA_POR_DEFECTO = 36.0;
 const CLAVE_TASA = "nutricost.tasa";
 const CLAVE_TASAS_ANTIGUA = "nutricost.tasas";
+const CLAVE_PISTA = "nutricost.pistaGestos";
 
 // Tope del presupuesto TOTAL según el plazo. El backend optimiza por día, así
 // que el tope diario equivalente es 100 / 28,6 / 20 USD para 1 / 7 / 30 días.
@@ -69,15 +70,14 @@ const numeroBs = new Intl.NumberFormat("es-VE", {
 const multiselects = {};
 let ultimoResultado = null;
 let macroChart = null;
+let costoChart = null;
+let cumplimientoChart = null;
 let chartZoom = 1;
 let toastTimer = null;
 
-const ETIQUETAS_NUTRIENTE = {
-    Calorias: "Calorías",
-    Proteinas: "Proteínas",
-    Carbohidratos: "Carbohidratos",
-    Grasas: "Grasas",
-};
+// A partir de este número de obligatorios es fácil que sus grasas o
+// carbohidratos agoten los topes del perfil y el modelo quede infactible.
+const LIMITE_OBLIGATORIOS = 5;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -92,6 +92,9 @@ function init() {
     initGestures();
     initSheet();
     initPaneles();
+    initVistas();
+    initPistaGestos();
+    actualizarResumenAvanzadas();
     document.getElementById("btn-calcular").addEventListener("click", calcularDieta);
     cargarAlimentos();
 }
@@ -315,6 +318,7 @@ function actualizarEquivalenteVES() {
     salida.textContent = tasa > 0 ? formatearBs(state.costoUSD * tasa) : "—";
 
     actualizarEtiquetaTasa();
+    actualizarResumenAvanzadas();
 }
 
 function bindTasa() {
@@ -500,6 +504,28 @@ function renderSeleccion(kind) {
         chip.append(texto, quitar);
         cfg.chips.appendChild(chip);
     });
+
+    actualizarResumenAvanzadas();
+    actualizarAvisoObligatorios();
+}
+
+function actualizarAvisoObligatorios() {
+    const aviso = document.getElementById("obligatorios-aviso");
+    if (!aviso) return;
+
+    const total = state.obligatorios.size;
+    if (total <= LIMITE_OBLIGATORIOS) {
+        aviso.textContent = "";
+        aviso.classList.add("hidden");
+        return;
+    }
+
+    // Es un aviso, no un bloqueo: el modelo puede seguir teniendo solución.
+    aviso.textContent =
+        `${total} alimentos obligatorios: cada uno exige al menos 100 g. ` +
+        "Con tantos, sus grasas o carbohidratos pueden superar los topes del " +
+        "perfil y el cálculo quedaría sin solución. Si eso pasa, quita alguno.";
+    aviso.classList.remove("hidden");
 }
 
 function filtrarLista(kind) {
@@ -605,6 +631,9 @@ async function calcularDieta() {
             throw new Error("La respuesta del servidor no tiene el formato esperado.");
         }
 
+        // En móvil cambiamos a la pestaña de resultados antes de pintar:
+        // Chart.js necesita el canvas visible para medir su tamaño.
+        mostrarVista("resultados");
         renderResultados(data);
     } catch (error) {
         console.error("Error al optimizar:", error);
@@ -645,12 +674,15 @@ function renderResultados(data, { scroll = true } = {}) {
     // Hacemos visible la zona antes de dibujar: Chart.js necesita medir el canvas.
     const results = document.getElementById("results");
     results.classList.remove("hidden");
+    document.getElementById("resultados-vacio")?.classList.add("hidden");
 
     renderMacroChart({
         proteinas: escalar(macro.Proteinas),
         carbohidratos: escalar(macro.Carbohidratos),
         grasas: escalar(macro.Grasas),
     });
+    renderCostoChart(data.alimentos, plazo);
+    renderCumplimientoChart(data);
 
     const contenedor = document.getElementById("cards");
     contenedor.replaceChildren();
@@ -668,10 +700,17 @@ function renderResultados(data, { scroll = true } = {}) {
         );
     });
 
-    renderSensibilidad(data.sensibilidad);
-
     if (scroll) {
-        results.scrollIntoView({ behavior: "smooth", block: "start" });
+        // En móvil ya estamos en la pestaña de resultados: basta con subir.
+        // En escritorio desplazamos la columna derecha a la vista.
+        const esEscritorio =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(min-width: 1024px)").matches;
+        if (esEscritorio) {
+            results.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
     }
 }
 
@@ -742,6 +781,260 @@ function renderMacroChart({ proteinas, carbohidratos, grasas }) {
                 },
             },
         },
+    });
+}
+
+/* ---------------------------------------------------------------------------
+   Gráfico: ¿en qué se va el dinero? (costo por alimento)
+   --------------------------------------------------------------------------- */
+function renderCostoChart(alimentos, plazo) {
+    const canvas = document.getElementById("costoChart");
+    const wrap = document.getElementById("costo-wrap");
+    const resumen = document.getElementById("costo-resumen");
+    if (!canvas || !wrap) return;
+
+    if (costoChart) {
+        costoChart.destroy();
+        costoChart = null;
+    }
+
+    const filas = (Array.isArray(alimentos) ? alimentos : [])
+        .map((item) => ({
+            nombre: item.alimento,
+            costo: (Number(item.costo_subtotal) || 0) * plazo,
+        }))
+        .filter((fila) => fila.costo > 0)
+        .sort((a, b) => b.costo - a.costo);
+
+    if (filas.length === 0) {
+        wrap.classList.add("hidden");
+        if (resumen) resumen.textContent = "";
+        return;
+    }
+
+    wrap.classList.remove("hidden");
+
+    const total = filas.reduce((suma, fila) => suma + fila.costo, 0) || 1;
+    const paleta = ["#059669", "#10b981", "#34d399", "#6ee7b7", "#a7f3d0", "#d1fae5"];
+
+    if (resumen) {
+        const top = filas[0];
+        resumen.textContent =
+            `El más caro: ${top.nombre} ` +
+            `(${money.format(top.costo)}, ${Math.round((top.costo / total) * 100)}%)`;
+    }
+
+    wrap.style.height = `${Math.max(150, filas.length * 34 + 30)}px`;
+
+    // Sin Chart.js el gráfico se omite, pero el resumen de arriba sigue visible.
+    if (typeof Chart === "undefined") {
+        wrap.classList.add("hidden");
+        return;
+    }
+
+    const truncar = (texto) =>
+        texto.length > 22 ? `${texto.slice(0, 21)}…` : texto;
+
+    costoChart = new Chart(canvas.getContext("2d"), {
+        type: "bar",
+        data: {
+            labels: filas.map((fila) => truncar(fila.nombre)),
+            datasets: [
+                {
+                    data: filas.map((fila) => fila.costo),
+                    backgroundColor: filas.map((_, i) => paleta[i % paleta.length]),
+                    borderRadius: 6,
+                    barThickness: 18,
+                },
+            ],
+        },
+        options: {
+            indexAxis: "y",
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 400 },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: (items) => filas[items[0].dataIndex].nombre,
+                        label: (contexto) => {
+                            const valor = contexto.parsed.x;
+                            const porcentaje = Math.round((valor / total) * 100);
+                            return ` ${money.format(valor)} · ${porcentaje}% del total`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    beginAtZero: true,
+                    grid: { color: "#e2e8f0" },
+                    ticks: {
+                        callback: (valor) => money.format(valor),
+                        color: "#64748b",
+                        font: { size: 10 },
+                    },
+                },
+                y: {
+                    grid: { display: false },
+                    ticks: { color: "#475569", font: { size: 11, weight: "600" } },
+                },
+            },
+        },
+    });
+}
+
+/* ---------------------------------------------------------------------------
+   Gráfico: cumplimiento de objetivos (% de cada meta)
+   --------------------------------------------------------------------------- */
+const FILAS_REQUERIMIENTO = [
+    { clave: "min_calorias", nutriente: "Calorias", etiqueta: "Calorías", unidad: "kcal", tipo: "minimo" },
+    { clave: "min_proteinas", nutriente: "Proteinas", etiqueta: "Proteínas", unidad: "g", tipo: "minimo" },
+    { clave: "min_carbohidratos", nutriente: "Carbohidratos", etiqueta: "Carbohidratos", unidad: "g", tipo: "minimo" },
+    { clave: "max_grasas", nutriente: "Grasas", etiqueta: "Grasas", unidad: "g", tipo: "maximo" },
+];
+
+function renderCumplimientoChart(data) {
+    const canvas = document.getElementById("cumplimientoChart");
+    const wrap = document.getElementById("cumplimiento-wrap");
+    const resumen = document.getElementById("cumplimiento-resumen");
+    if (!canvas || !wrap) return;
+
+    if (cumplimientoChart) {
+        cumplimientoChart.destroy();
+        cumplimientoChart = null;
+    }
+
+    const requerimientos = data?.requerimientos || {};
+    const real = data?.resumen_nutricional || {};
+
+    // El backend trabaja siempre a 1 día; el porcentaje no depende del plazo.
+    const filas = FILAS_REQUERIMIENTO.map((fila) => {
+        const objetivo = Number(requerimientos[fila.clave]) || 0;
+        const valor = Number(real[fila.nutriente]) || 0;
+        return {
+            ...fila,
+            objetivo,
+            valor,
+            porcentaje: objetivo > 0 ? (valor / objetivo) * 100 : 0,
+        };
+    }).filter((fila) => fila.objetivo > 0);
+
+    if (filas.length === 0) {
+        wrap.classList.add("hidden");
+        if (resumen) {
+            resumen.textContent = "El servidor no devolvió los objetivos del perfil.";
+        }
+        return;
+    }
+
+    wrap.classList.remove("hidden");
+
+    const colorFila = (fila) => {
+        // En un máximo (grasas) cumplir es no pasarse; en un mínimo, alcanzar.
+        if (fila.tipo === "maximo") {
+            return fila.porcentaje <= 100.5 ? "#059669" : "#dc2626";
+        }
+        return fila.porcentaje >= 99.5 ? "#059669" : "#f59e0b";
+    };
+
+    const minimo = Math.min(...filas.map((fila) => fila.porcentaje));
+    if (resumen) {
+        resumen.textContent =
+            minimo >= 99.5
+                ? "La cesta cumple todos los objetivos del perfil."
+                : `El objetivo más bajo se cubre al ${Math.round(minimo)}%.`;
+    }
+
+    wrap.style.height = `${Math.max(150, filas.length * 36 + 30)}px`;
+
+    if (typeof Chart === "undefined") {
+        wrap.classList.add("hidden");
+        return;
+    }
+
+    // Línea punteada en el 100 % (la meta).
+    const lineaObjetivo = {
+        id: "lineaObjetivo",
+        afterDatasetsDraw(chart) {
+            const { ctx, chartArea, scales } = chart;
+            if (!scales?.x || !chartArea) return;
+            const x = scales.x.getPixelForValue(100);
+            ctx.save();
+            ctx.strokeStyle = "#94a3b8";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(x, chartArea.top);
+            ctx.lineTo(x, chartArea.bottom);
+            ctx.stroke();
+            ctx.restore();
+        },
+    };
+
+    const maximo = Math.max(110, ...filas.map((fila) => fila.porcentaje));
+
+    cumplimientoChart = new Chart(canvas.getContext("2d"), {
+        type: "bar",
+        data: {
+            labels: filas.map(
+                (fila) =>
+                    `${fila.etiqueta} (${fila.tipo === "maximo" ? "máx" : "mín"})`
+            ),
+            datasets: [
+                {
+                    data: filas.map((fila) => Math.round(fila.porcentaje * 10) / 10),
+                    backgroundColor: filas.map(colorFila),
+                    borderRadius: 6,
+                    barThickness: 18,
+                },
+            ],
+        },
+        options: {
+            indexAxis: "y",
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 400 },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: (contexto) => {
+                            const fila = filas[contexto.dataIndex];
+                            const valor = `${numberFmt(fila.valor, 2)} ${fila.unidad}`;
+                            const meta = `${numberFmt(fila.objetivo, 2)} ${fila.unidad}`;
+                            // Los carbohidratos tienen rango: mostramos también el tope.
+                            const maxCarbs = Number(requerimientos.max_carbohidratos);
+                            const extra =
+                                fila.nutriente === "Carbohidratos" && maxCarbs > 0
+                                    ? ` · máx ${numberFmt(maxCarbs, 2)} g`
+                                    : "";
+                            return ` ${valor} de ${meta} (${Math.round(
+                                fila.porcentaje
+                            )}%)${extra}`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    beginAtZero: true,
+                    suggestedMax: maximo,
+                    grid: { color: "#e2e8f0" },
+                    ticks: {
+                        callback: (valor) => `${valor}%`,
+                        color: "#64748b",
+                        font: { size: 10 },
+                    },
+                },
+                y: {
+                    grid: { display: false },
+                    ticks: { color: "#475569", font: { size: 11, weight: "600" } },
+                },
+            },
+        },
+        plugins: [lineaObjetivo],
     });
 }
 
@@ -936,7 +1229,14 @@ function initPaneles() {
     const hint = document.getElementById("gesture-hint");
     const cerrar = document.getElementById("gesture-hint-close");
     if (hint && cerrar) {
-        cerrar.addEventListener("click", () => hint.classList.add("is-hidden"));
+        cerrar.addEventListener("click", () => {
+            hint.classList.add("is-hidden");
+            try {
+                localStorage.setItem(CLAVE_PISTA, "oculta");
+            } catch (_) {
+                // localStorage no disponible: la pista vuelve en la próxima visita.
+            }
+        });
     }
 
     document
@@ -945,6 +1245,95 @@ function initPaneles() {
     document
         .getElementById("zoom-out")
         ?.addEventListener("click", () => zoomChart(1 / 1.15, true));
+}
+
+/* ===========================================================================
+   Vistas (pestañas móvil) y opciones avanzadas
+   =========================================================================== */
+const VISTAS = {
+    config: { tab: "tab-config", panel: "panel-config" },
+    resultados: { tab: "tab-resultados", panel: "panel-resultados" },
+};
+
+function initVistas() {
+    Object.entries(VISTAS).forEach(([nombre, refs]) => {
+        document
+            .getElementById(refs.tab)
+            ?.addEventListener("click", () => mostrarVista(nombre));
+    });
+
+    document
+        .getElementById("ir-config")
+        ?.addEventListener("click", () => mostrarVista("config", { scroll: true }));
+    document
+        .getElementById("editar-perfil")
+        ?.addEventListener("click", () => mostrarVista("config", { scroll: true }));
+
+    mostrarVista("config");
+}
+
+function mostrarVista(nombre, { scroll = false } = {}) {
+    Object.entries(VISTAS).forEach(([clave, refs]) => {
+        const activa = clave === nombre;
+        const panel = document.getElementById(refs.panel);
+        const tab = document.getElementById(refs.tab);
+
+        // En escritorio ambas columnas se ven: las clases `lg:block` del HTML
+        // ganan al `hidden` porque viven dentro de una media query.
+        panel?.classList.toggle("hidden", !activa);
+        tab?.setAttribute("aria-selected", String(activa));
+        tab?.setAttribute("tabindex", activa ? "0" : "-1");
+    });
+
+    if (nombre === "resultados") {
+        // Si los gráficos se recrearon con el panel oculto (por ejemplo, al
+        // cambiar el plazo desde Configurar), Chart.js pudo medir 0×0.
+        window.requestAnimationFrame?.(() => {
+            [macroChart, costoChart, cumplimientoChart].forEach(
+                (chart) => chart?.resize?.()
+            );
+        });
+    }
+
+    if (scroll) {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+}
+
+function initPistaGestos() {
+    const hint = document.getElementById("gesture-hint");
+    if (!hint) return;
+    try {
+        if (localStorage.getItem(CLAVE_PISTA) === "oculta") {
+            hint.classList.add("is-hidden");
+        }
+    } catch (_) {
+        // Sin localStorage se mantiene la pista visible.
+    }
+}
+
+function actualizarResumenAvanzadas() {
+    const resumen = document.getElementById("avanzadas-resumen");
+    if (!resumen) return;
+
+    const partes = [];
+    if (state.tasa > 0) partes.push(`Tasa ${numeroBs.format(state.tasa)}`);
+    if (state.obligatorios.size > 0) {
+        partes.push(
+            `${state.obligatorios.size} obligatorio${
+                state.obligatorios.size === 1 ? "" : "s"
+            }`
+        );
+    }
+    if (state.excluidos.size > 0) {
+        partes.push(
+            `${state.excluidos.size} excluido${
+                state.excluidos.size === 1 ? "" : "s"
+            }`
+        );
+    }
+
+    resumen.textContent = partes.length > 0 ? partes.join(" · ") : "Tasa y filtros";
 }
 
 /* ===========================================================================
@@ -1031,93 +1420,6 @@ function cerrarSheet() {
         sheet.classList.add("hidden");
         backdrop?.classList.add("hidden");
     }, 250);
-}
-
-/* ===========================================================================
-   Explicabilidad: precios sombra
-   =========================================================================== */
-function renderSensibilidad(sensibilidad) {
-    const card = document.getElementById("sensibilidad-card");
-    const lista = document.getElementById("sensibilidad-list");
-    const resumen = document.getElementById("sensibilidad-resumen");
-    if (!card || !lista || !resumen) return;
-
-    const precios = Array.isArray(sensibilidad?.precios_sombra)
-        ? sensibilidad.precios_sombra
-        : [];
-
-    if (
-        !sensibilidad ||
-        !sensibilidad.precios_sombra ||
-        precios.length === 0 ||
-        sensibilidad.costo_relajado == null
-    ) {
-        card.classList.add("hidden");
-        return;
-    }
-
-    card.classList.remove("hidden");
-
-    const integralidad = Number(sensibilidad.costo_integralidad);
-    resumen.textContent =
-        `Costo continuo: $${Number(sensibilidad.costo_relajado).toFixed(2)}` +
-        ` · Costo entero: $${Number(ultimoResultado?.costo_total || 0).toFixed(2)}` +
-        (Number.isFinite(integralidad)
-            ? ` · Costo de la integralidad: $${integralidad.toFixed(2)}`
-            : "");
-
-    const activos = precios.filter((precio) => precio.activa);
-    const filas = activos.length > 0 ? activos : precios;
-    const maximo = Math.max(
-        ...filas.map((precio) => Math.abs(Number(precio.por_100_unidades) || 0)),
-        1e-9
-    );
-
-    lista.replaceChildren();
-
-    filas.forEach((precio) => {
-        const valor = Number(precio.por_100_unidades) || 0;
-        const etiqueta = ETIQUETAS_NUTRIENTE[precio.nutriente] || precio.nutriente;
-        const unidad = precio.unidad === "kcal" ? "kcal" : "g";
-
-        const item = document.createElement("li");
-        item.className = "space-y-1";
-
-        const fila = document.createElement("div");
-        fila.className = "flex items-baseline justify-between gap-2 text-xs";
-
-        const nombre = document.createElement("span");
-        nombre.className = "text-slate-600";
-        nombre.textContent = `${etiqueta} (${
-            precio.tipo === "minimo" ? "mínimo" : "máximo"
-        })`;
-
-        const monto = document.createElement("span");
-        monto.className =
-            valor === 0
-                ? "font-semibold text-slate-400"
-                : "font-semibold text-emerald-700";
-        monto.textContent =
-            valor === 0
-                ? "sin efecto"
-                : `${valor > 0 ? "+" : "−"}$${Math.abs(valor).toFixed(
-                      4
-                  )} / +100 ${unidad}`;
-
-        fila.append(nombre, monto);
-
-        const barra = document.createElement("div");
-        barra.className = "sens-bar";
-        const relleno = document.createElement("span");
-        relleno.style.width = `${Math.max(
-            4,
-            (Math.abs(valor) / maximo) * 100
-        )}%`;
-        barra.appendChild(relleno);
-
-        item.append(fila, barra);
-        lista.appendChild(item);
-    });
 }
 
 /* ===========================================================================

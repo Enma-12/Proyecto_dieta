@@ -218,6 +218,7 @@ class ModeloNoOptimo(Exception):
         estado: str,
         motivo: str = "requerimientos",
         costo_minimo: float | None = None,
+        detalle: dict | None = None,
     ):
         super().__init__(estado)
         self.estado = estado
@@ -227,6 +228,9 @@ class ModeloNoOptimo(Exception):
         # Costo diario mínimo cuando el problema solo es inviable por el
         # presupuesto (se obtiene del reintento sin la cota de gasto).
         self.costo_minimo = costo_minimo
+        # Diagnóstico de qué tope agotan los alimentos obligatorios (solo para
+        # infeasibilidad por requerimientos).
+        self.detalle = detalle
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +545,148 @@ def construir_problema(
     return problema, x
 
 
+# ---------------------------------------------------------------------------
+# Diagnóstico de infactibilidad por alimentos obligatorios
+# ---------------------------------------------------------------------------
+def _aportantes(sub: pd.DataFrame, columna: str, limite: int = 3) -> list[dict]:
+    """Alimentos obligatorios que más aportan a un nutriente (para sugerir)."""
+    orden = sub.sort_values(columna, ascending=False).head(limite)
+    return [
+        {"alimento": str(fila["Alimento"]), "aporte": round(float(fila[columna]), 2)}
+        for _, fila in orden.iterrows()
+        if float(fila[columna]) > 0
+    ]
+
+
+def diagnosticar_obligatorios(
+    alimentos_obligatorios,
+    max_carbohidratos,
+    max_grasas,
+    presupuesto_maximo=None,
+) -> dict | None:
+    """
+    Explica por qué una lista de obligatorios puede volver el modelo infactible.
+
+    Cada obligatorio impone x_i >= 1, es decir, al menos 100 g. Esa suma es un
+    piso inevitable: si por sí sola supera un tope duro (carbohidratos, grasas
+    o presupuesto), ninguna combinación del resto puede arreglarlo. Devolvemos
+    ese piso y las violaciones para que la interfaz diga qué quitar.
+    """
+    if not alimentos_obligatorios:
+        return None
+
+    indices = resolver_indices(df, alimentos_obligatorios, "obligatorios")
+    sub = df.loc[indices]
+
+    aportes = {
+        "costo": round(float(sub["Costo"].sum()), 2),
+        "calorias": round(float(sub["Calorias"].sum()), 2),
+        "proteinas": round(float(sub["Proteinas"].sum()), 2),
+        "carbohidratos": round(float(sub["Carbohidratos"].sum()), 2),
+        "grasas": round(float(sub["Grasas"].sum()), 2),
+    }
+
+    violaciones = []
+
+    if aportes["carbohidratos"] > max_carbohidratos + TOLERANCIA_PRESUPUESTO:
+        violaciones.append(
+            {
+                "restriccion": "Maximo_Carbohidratos",
+                "nutriente": "Carbohidratos",
+                "unidad": "g",
+                "aporte": aportes["carbohidratos"],
+                "limite": round(float(max_carbohidratos), 2),
+                "exceso": round(aportes["carbohidratos"] - max_carbohidratos, 2),
+                "sugerencias": _aportantes(sub, "Carbohidratos"),
+            }
+        )
+
+    if aportes["grasas"] > max_grasas + TOLERANCIA_PRESUPUESTO:
+        violaciones.append(
+            {
+                "restriccion": "Maximo_Grasas",
+                "nutriente": "Grasas",
+                "unidad": "g",
+                "aporte": aportes["grasas"],
+                "limite": round(float(max_grasas), 2),
+                "exceso": round(aportes["grasas"] - max_grasas, 2),
+                "sugerencias": _aportantes(sub, "Grasas"),
+            }
+        )
+
+    if (
+        presupuesto_maximo is not None
+        and aportes["costo"] > presupuesto_maximo + TOLERANCIA_PRESUPUESTO
+    ):
+        violaciones.append(
+            {
+                "restriccion": "Presupuesto_Maximo",
+                "nutriente": "Costo",
+                "unidad": "USD",
+                "aporte": aportes["costo"],
+                "limite": round(float(presupuesto_maximo), 2),
+                "exceso": round(aportes["costo"] - presupuesto_maximo, 2),
+                "sugerencias": _aportantes(sub, "Costo"),
+            }
+        )
+
+    return {
+        "alimentos": len(indices),
+        "aportes": aportes,
+        "violaciones": violaciones,
+    }
+
+
+def mensaje_requerimientos(detalle: dict | None) -> str:
+    """Convierte el diagnóstico de los obligatorios en un mensaje accionable."""
+    if not detalle:
+        return MENSAJE_IMPOSSIBLE
+
+    cantidad = detalle["alimentos"]
+    sustantivo = (
+        "alimento obligatorio" if cantidad == 1 else "alimentos obligatorios"
+    )
+
+    violaciones = detalle.get("violaciones") or []
+    if not violaciones:
+        return (
+            f"Con {cantidad} {sustantivo} no queda margen para alcanzar los "
+            "mínimos sin superar los topes de carbohidratos o grasas. Quita "
+            "alguno de la lista de obligatorios y vuelve a calcular."
+        )
+
+    partes = []
+    sugerencias = []
+    for violacion in violaciones:
+        if violacion["restriccion"] == "Presupuesto_Maximo":
+            partes.append(
+                f"una porción de cada uno cuesta ${violacion['aporte']:.2f} y el "
+                f"presupuesto es ${violacion['limite']:.2f}"
+            )
+        else:
+            partes.append(
+                f"una porción de cada uno ya aporta {violacion['aporte']:.0f} g de "
+                f"{violacion['nutriente'].lower()} y el máximo es "
+                f"{violacion['limite']:.0f} g"
+            )
+        sugerencias.extend(
+            sugerencia["alimento"]
+            for sugerencia in violacion.get("sugerencias", [])
+        )
+
+    mensaje = (
+        f"Con {detalle['alimentos']} alimentos obligatorios no hay solución: "
+        + "; ".join(partes)
+        + "."
+    )
+
+    unicos = list(dict.fromkeys(sugerencias))[:4]
+    if unicos:
+        mensaje += " Los que más aportan son: " + ", ".join(unicos) + "."
+    mensaje += " Quita alguno de la lista de obligatorios y vuelve a calcular."
+    return mensaje
+
+
 def resolver_dieta(
     min_calorias,
     min_proteinas,
@@ -595,7 +741,19 @@ def resolver_dieta(
                 motivo = "presupuesto"
                 costo_minimo = round(float(pulp.value(problema.objective)), 2)
 
-        raise ModeloNoOptimo(estado, motivo, costo_minimo)
+        # Si el problema sigue siendo infactible sin la cota de gasto, el
+        # culpable está en los requerimientos. Diagnosticamos si los
+        # obligatorios, por sí solos, ya agotan algún tope duro.
+        detalle = None
+        if motivo == "requerimientos":
+            detalle = diagnosticar_obligatorios(
+                alimentos_obligatorios,
+                max_carbohidratos=max_carbohidratos,
+                max_grasas=max_grasas,
+                presupuesto_maximo=presupuesto_maximo,
+            )
+
+        raise ModeloNoOptimo(estado, motivo, costo_minimo, detalle)
 
     # --- Extracción de resultados ---
     # int(...) porque las variables ya son enteras (evita devolver 7.0).
@@ -713,9 +871,33 @@ def calcular_sensibilidad(parametros: dict, costo_total=None) -> dict:
     return resultado
 
 
+CAMPOS_REQUERIMIENTOS = (
+    "min_calorias",
+    "min_proteinas",
+    "min_carbohidratos",
+    "max_carbohidratos",
+    "max_grasas",
+)
+
+
+def resumir_requerimientos(parametros: dict) -> dict:
+    """
+    Extrae los límites nutricionales que usó el modelo.
+
+    El frontend los necesita para dibujar el gráfico de cumplimiento de
+    objetivos (valor real vs. meta) sin duplicar las fórmulas del perfil.
+    """
+    return {
+        campo: round(float(parametros[campo]), 2)
+        for campo in CAMPOS_REQUERIMIENTOS
+        if campo in parametros
+    }
+
+
 def resolver_con_sensibilidad(parametros: dict) -> dict:
-    """Resuelve el MILP y le adjunta el análisis de sensibilidad."""
+    """Resuelve el MILP y le adjunta requerimientos y sensibilidad."""
     resultado = resolver_dieta(**parametros)
+    resultado["requerimientos"] = resumir_requerimientos(parametros)
     resultado["sensibilidad"] = calcular_sensibilidad(
         parametros, resultado["costo_total"]
     )
@@ -744,16 +926,16 @@ def respuesta_no_optima(error: ModeloNoOptimo):
             respuesta["costo_minimo_diario"] = error.costo_minimo
         return jsonify(respuesta), 422
 
-    return (
-        jsonify(
-            {
-                "estado": "Error",
-                "codigo": "requerimientos_imposibles",
-                "mensaje": MENSAJE_IMPOSSIBLE,
-            }
-        ),
-        422,
-    )
+    respuesta = {
+        "estado": "Error",
+        "codigo": "requerimientos_imposibles",
+        "mensaje": mensaje_requerimientos(error.detalle),
+    }
+    if error.detalle:
+        # Detalle estructurado: qué tope se viola, cuánto aporta una porción
+        # de cada obligatorio y qué alimentos son los principales culpables.
+        respuesta["diagnostico"] = error.detalle
+    return jsonify(respuesta), 422
 
 
 def respuesta_error_solver(error, payload):

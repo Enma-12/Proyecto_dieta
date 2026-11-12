@@ -16,7 +16,7 @@ de explicabilidad del motor de decisión.
 - **Tasa BCV USD → VES:** campo editable con los bolívares por dólar y equivalente en bolívares del costo total, actualizado al instante sin repetir la consulta. La tasa se guarda en `localStorage`.
 - **Cantidades en gramos:** cada tarjeta muestra los gramos como dato principal (`porciones × 100 g`) y las porciones como referencia.
 - **Interfaz gestual:** swipe, pulsación larga, pinch y doble toque con Pointer Events (sin librerías externas) y respaldo accesible por botones.
-- **Explicabilidad:** precios sombra (duales) que indican qué nutriente encarece la dieta y panel “¿Cómo se calcula?”.
+- **Explicabilidad:** precios sombra (duales) disponibles en la API y diagnóstico específico cuando los alimentos obligatorios agotan un tope.
 - **API REST:** backend Flask + frontend separado con CORS.
 - **Modo consola:** `modelo.py` resuelve el mismo modelo sin servidor.
 
@@ -40,7 +40,7 @@ Proyecto_dieta/
 ├── modelo.py            # Versión consola del mismo modelo
 ├── alimentos.csv        # Dataset: costo y macros por 100 g de cada alimento
 ├── Frontend/
-│   ├── index.html       # Interfaz (zonas, hoja de detalle, panel del motor)
+│   ├── index.html       # Interfaz (pestañas, hoja de detalle, gráficos)
 │   ├── style.css        # Ergonomía táctil, hoja inferior y barras
 │   ├── gestures.js      # Reconocedor de gestos (swipe, long-press, pinch, doble tap)
 │   └── script.js        # Estado, llamadas a la API y render
@@ -107,13 +107,42 @@ Detalles de implementación:
 
 ---
 
+## 🖥️ Diseño y gráficos
+
+La interfaz se adapta en dos niveles:
+
+- **Móvil:** pestañas **Configurar / Resultados**. Al calcular, la app cambia
+  automáticamente a Resultados; el botón **Editar** (o la pestaña Configurar)
+  devuelve al formulario. La tasa BCV y los filtros de alimentos viven en
+  **Opciones avanzadas**, cerradas por defecto, para acortar el formulario.
+- **Escritorio (≥1024 px):** dos columnas; el formulario a la izquierda y los
+  resultados a la derecha, sin bajar para comparar ambos.
+
+Los resultados incluyen tres visualizaciones:
+
+| Gráfico | Tipo | Qué responde |
+|---|---|---|
+| **¿En qué se va el dinero?** | Barras horizontales | Costo y porcentaje de cada alimento de la cesta. |
+| **Distribución de calorías** | Dona | Reparto de kcal entre proteínas, carbohidratos y grasas. |
+| **Cumplimiento de objetivos** | Barras + línea punteada en el 100 % | Porcentaje cubierto de cada meta (kcal, proteínas, carbohidratos y grasas). |
+
+- Todos usan Chart.js y se recrean al cambiar el plazo.
+- Si el CDN de Chart.js no carga, el resto de la app sigue funcionando; los
+  gráficos se omiten y se conservan sus resúmenes textuales.
+- El gráfico de cumplimiento usa el campo `requerimientos` de la respuesta; si el
+  backend no lo envía, muestra un aviso en lugar de un gráfico vacío.
+- Los precios sombra siguen disponibles en la API (`sensibilidad` y
+  `POST /sensibilidad`), pero ya no se muestran como tarjeta en la interfaz.
+
+---
+
 ## 💱 Tasa BCV (USD → VES)
 
 La app calcula y envía todo en **dólares**; la conversión a bolívares es solo de
 presentación.
 
-- En **Tus reglas** hay un campo **Tasa BCV (Bs. por 1 USD)** donde el usuario
-  escribe cuántos bolívares equivalen a un dólar.
+- En **Tus reglas → Opciones avanzadas** hay un campo **Tasa BCV (Bs. por 1 USD)**
+  donde el usuario escribe cuántos bolívares equivalen a un dólar.
 - El valor inicial es de referencia (`36,00`) y se edita libremente.
 - La tasa se persiste en `localStorage` (`nutricost.tasa`), por lo que se conserva
   al recargar. Si existe la clave antigua `nutricost.tasas`, se migra la tasa BCV.
@@ -203,8 +232,9 @@ Sobre la relajación lineal se extraen los **duales** de cada restricción:
 - Restricción de **mínimo** (`≥`): π ≥ 0. Costo marginal de exigir una unidad más.
 - Restricción de **máximo** (`≤`): π ≤ 0. Ahorro marginal de relajar el techo.
 
-Responden preguntas como *“¿qué nutriente me está encareciendo la dieta?”* y se
-muestran en la tarjeta **“¿Qué encarece tu dieta?”** del frontend.
+Responden preguntas como *“¿qué nutriente me está encareciendo la dieta?”*. Se
+exponen en el campo `sensibilidad` de la respuesta y en `POST /sensibilidad`; la
+interfaz ya no los muestra como tarjeta.
 
 > CBC solo reporta duales en problemas continuos; por eso el backend reconstruye
 > el modelo con `cat="Continuous"` y lo resuelve aparte (milisegundos con este dataset).
@@ -276,6 +306,13 @@ Respuesta (resumida):
     "Carbohidratos": 343.1,
     "Grasas": 68.5
   },
+  "requerimientos": {
+    "min_calorias": 2594.31,
+    "min_proteinas": 140.0,
+    "min_carbohidratos": 346.43,
+    "max_carbohidratos": 396.43,
+    "max_grasas": 72.06
+  },
   "sensibilidad": {
     "costo_relajado": 1.24,
     "costo_integralidad": 0.44,
@@ -294,6 +331,11 @@ Respuesta (resumida):
 }
 ```
 
+`requerimientos` contiene los límites que usó el modelo (`min_calorias`,
+`min_proteinas`, `min_carbohidratos`, `max_carbohidratos`, `max_grasas`) y permite
+al frontend dibujar el gráfico de **cumplimiento de objetivos** comparándolos con
+`resumen_nutricional`.
+
 ### Códigos de respuesta
 
 | Código | Significado |
@@ -305,10 +347,10 @@ Respuesta (resumida):
 
 Los `422` incluyen un campo `codigo` para que el frontend distinga el motivo:
 
-| `codigo` | `mensaje` |
+| `codigo` | Significado |
 |---|---|
-| `presupuesto_insuficiente` | El presupuesto máximo especificado es insuficiente para cubrir los requerimientos nutricionales mínimos en el plazo seleccionado. |
-| `requerimientos_imposibles` | Tus requerimientos son matemáticamente imposibles de cumplir con los alimentos actuales. |
+| `presupuesto_insuficiente` | El presupuesto no alcanza para los requerimientos del perfil. |
+| `requerimientos_imposibles` | Los requerimientos chocan con los topes del modelo (carbohidratos, grasas o alimentos obligatorios). |
 
 Cuando el motivo es el presupuesto, la respuesta incluye además
 `costo_minimo_diario`: el costo mínimo que necesita el perfil sin la cota de gasto.
@@ -321,6 +363,47 @@ El backend detecta el caso de presupuesto reintentando el modelo **sin** la cota
 gasto: si así encuentra óptimo, la infeasibilidad venía del presupuesto. La
 restricción usa una tolerancia numérica (`1e-6`) para no rechazar un presupuesto que
 coincide exactamente con el costo mínimo.
+
+### Diagnóstico de alimentos obligatorios
+
+Cada alimento obligatorio impone `x_i >= 1`, es decir, al menos 100 g. Esa suma es
+un piso inevitable: si por sí sola supera el tope de grasas, el de carbohidratos o
+el presupuesto, **ninguna** combinación del resto puede arreglarlo. En ese caso el
+`422` por `requerimientos_imposibles` incluye:
+
+```json
+{
+  "codigo": "requerimientos_imposibles",
+  "mensaje": "Con 10 alimentos obligatorios no hay solución: una porción de cada uno ya aporta 88 g de grasas y el máximo es 72 g; ... Quita alguno de la lista de obligatorios y vuelve a calcular.",
+  "diagnostico": {
+    "alimentos": 10,
+    "aportes": { "costo": 6.09, "calorias": 1674.0, "proteinas": 200.0,
+                 "carbohidratos": 10.8, "grasas": 88.0 },
+    "violaciones": [
+      {
+        "restriccion": "Maximo_Grasas",
+        "nutriente": "Grasas",
+        "unidad": "g",
+        "aporte": 88.0,
+        "limite": 72.06,
+        "exceso": 15.94,
+        "sugerencias": [
+          { "alimento": "Queso blanco duro", "aporte": 25.0 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `aportes` es el mínimo que aporta una porción de cada obligatorio.
+- `violaciones` lista solo los topes que ese mínimo ya supera.
+- `sugerencias` ordena los obligatorios que más aportan al nutriente violado,
+  para que el usuario sepa cuáles quitar primero.
+
+En la interfaz, al superar **5 alimentos obligatorios** aparece un aviso (no un
+bloqueo) explicando que el cálculo podría quedar sin solución. Es una advertencia
+blanda: el modelo puede seguir siendo factible, y solo se confirma al calcular.
 
 ---
 

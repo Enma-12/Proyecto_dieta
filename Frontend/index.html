@@ -26,7 +26,7 @@
 </head>
 
 <body class="min-h-screen bg-slate-100 text-slate-800 antialiased">
-    <div class="mx-auto w-full max-w-md px-4 pb-36 pt-6 md:max-w-2xl lg:max-w-4xl">
+    <div class="mx-auto w-full max-w-md px-4 pb-36 pt-6 md:max-w-2xl lg:max-w-6xl">
 
         <!-- Cabecera -->
         <header class="mb-6 flex items-center gap-3">
@@ -60,7 +60,17 @@
             </div>
         </div>
 
-        <main class="space-y-5">
+        <!-- Pestañas: solo móvil -->
+        <div id="vista-tabs" role="tablist" aria-label="Vistas"
+             class="mb-4 grid grid-cols-2 gap-1 rounded-2xl bg-white p-1 shadow-card ring-1 ring-slate-100 lg:hidden">
+            <button id="tab-config" type="button" role="tab" aria-selected="true" aria-controls="panel-config"
+                    class="tab rounded-xl px-3 py-2 text-sm font-semibold">Configurar</button>
+            <button id="tab-resultados" type="button" role="tab" aria-selected="false" aria-controls="panel-resultados"
+                    class="tab rounded-xl px-3 py-2 text-sm font-semibold">Resultados</button>
+        </div>
+
+        <main class="lg:grid lg:grid-cols-[380px_minmax(0,1fr)] lg:items-start lg:gap-6">
+            <div id="panel-config" class="space-y-5 lg:block">
 
             <!-- ============================ ZONA 1 ============================ -->
             <section class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
@@ -141,26 +151,31 @@
                 <!-- Actividad -->
                 <fieldset class="mt-5">
                     <legend class="mb-2 text-sm font-medium text-slate-600">Nivel de actividad</legend>
-                    <div class="space-y-2">
-                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" class="chip rounded-2xl px-3 py-2.5 text-left text-sm font-medium leading-tight ring-1"
                                 data-group="actividad" data-value="1.2" aria-pressed="false">
-                            Poco o ningún ejercicio 
+                            <span class="block">Sedentario</span>
+                            <span class="block text-[11px] font-normal opacity-70">Poco o nada</span>
                         </button>
-                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                        <button type="button" class="chip rounded-2xl px-3 py-2.5 text-left text-sm font-medium leading-tight ring-1"
                                 data-group="actividad" data-value="1.375" aria-pressed="false">
-                            Ejercicio ligero (1-3 días a la semana)
+                            <span class="block">Ligero</span>
+                            <span class="block text-[11px] font-normal opacity-70">1-3 días/semana</span>
                         </button>
-                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                        <button type="button" class="chip rounded-2xl px-3 py-2.5 text-left text-sm font-medium leading-tight ring-1"
                                 data-group="actividad" data-value="1.55" aria-pressed="true">
-                            Ejercicio moderado (3-5 días a la semana)
+                            <span class="block">Moderado</span>
+                            <span class="block text-[11px] font-normal opacity-70">3-5 días/semana</span>
                         </button>
-                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                        <button type="button" class="chip rounded-2xl px-3 py-2.5 text-left text-sm font-medium leading-tight ring-1"
                                 data-group="actividad" data-value="1.725" aria-pressed="false">
-                            Ejercicio fuerte (6-7 días a la semana)
+                            <span class="block">Fuerte</span>
+                            <span class="block text-[11px] font-normal opacity-70">6-7 días/semana</span>
                         </button>
-                        <button type="button" class="chip w-full rounded-2xl px-4 py-3 text-left text-sm font-medium leading-snug ring-1"
+                        <button type="button" class="chip col-span-2 rounded-2xl px-3 py-2.5 text-left text-sm font-medium leading-tight ring-1"
                                 data-group="actividad" data-value="1.9" aria-pressed="false">
-                            Ejercicio muy fuerte (Entrenamiento intenso 6-7 días a la semana o doble turno, ej. Natación)
+                            <span class="block">Muy fuerte</span>
+                            <span class="block text-[11px] font-normal opacity-70">Doble turno o entrenamiento intenso</span>
                         </button>
                     </div>
                 </fieldset>
@@ -205,155 +220,200 @@
                     <p class="mt-1 text-[11px] text-slate-400">El costo y los macros se multiplican por el plazo elegido.</p>
                 </fieldset>
 
-                <!-- Tasa BCV -->
-                <fieldset class="mb-6">
-                    <legend class="mb-2 text-sm font-medium text-slate-600">Tasa BCV (Bs. por 1 USD)</legend>
-                    <div class="flex items-center justify-between gap-2 rounded-2xl border border-slate-200 px-4 py-2.5">
-                        <label for="tasa-val" class="text-sm text-slate-500">1 USD equivale a</label>
-                        <span class="flex items-baseline gap-1">
-                            <input id="tasa-val" type="number" inputmode="decimal" min="0" step="0.01" value="36.00"
-                                   aria-label="Tasa BCV en bolívares por dólar"
-                                   class="w-24 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
-                            <span class="text-sm text-slate-500">Bs.</span>
-                        </span>
-                    </div>
-                    <p class="mt-1 text-[11px] text-slate-400">Solo afecta la conversión a bolívares; el cálculo se hace en dólares.</p>
-                </fieldset>
+                <!-- Opciones avanzadas -->
+                <details id="avanzadas" class="mt-2 rounded-2xl border border-slate-200 px-4 py-3">
+                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-slate-600">
+                        <span>Opciones avanzadas</span>
+                        <span id="avanzadas-resumen" class="truncate text-[11px] font-normal text-slate-400">Tasa y filtros</span>
+                    </summary>
 
-                <!-- Obligatorios -->
-                <div class="mb-4">
-                    <label class="mb-2 block text-sm font-medium text-slate-600" for="obligatorios-toggle">
-                        Alimentos obligatorios
-                    </label>
-                    <div class="relative" data-multiselect="obligatorios">
-                        <button type="button" id="obligatorios-toggle" aria-expanded="false"
-                                class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
-                            <span id="obligatorios-label" class="truncate">Ninguno seleccionado</span>
-                            <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
-                            </svg>
-                        </button>
-                        <div id="obligatorios-panel"
-                             class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
-                            <input id="obligatorios-search" type="search" placeholder="Buscar alimento…"
-                                   class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
-                            <div id="obligatorios-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
-                        </div>
-                        <div id="obligatorios-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
-                    </div>
-                </div>
+                    <div class="mt-4 space-y-5">
+                        <!-- Tasa BCV -->
+                        <fieldset>
+                            <legend class="mb-2 text-sm font-medium text-slate-600">Tasa BCV (Bs. por 1 USD)</legend>
+                            <div class="flex items-center justify-between gap-2 rounded-2xl border border-slate-200 px-4 py-2.5">
+                                <label for="tasa-val" class="text-sm text-slate-500">1 USD equivale a</label>
+                                <span class="flex items-baseline gap-1">
+                                    <input id="tasa-val" type="number" inputmode="decimal" min="0" step="0.01" value="36.00"
+                                           aria-label="Tasa BCV en bolívares por dólar"
+                                           class="w-24 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                                    <span class="text-sm text-slate-500">Bs.</span>
+                                </span>
+                            </div>
+                            <p class="mt-1 text-[11px] text-slate-400">Solo afecta la conversión a bolívares; el cálculo se hace en dólares.</p>
+                        </fieldset>
 
-                <!-- Excluidos -->
-                <div>
-                    <label class="mb-2 block text-sm font-medium text-slate-600" for="excluidos-toggle">
-                        Alimentos excluidos
-                    </label>
-                    <div class="relative" data-multiselect="excluidos">
-                        <button type="button" id="excluidos-toggle" aria-expanded="false"
-                                class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
-                            <span id="excluidos-label" class="truncate">Ninguno seleccionado</span>
-                            <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
-                            </svg>
-                        </button>
-                        <div id="excluidos-panel"
-                             class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
-                            <input id="excluidos-search" type="search" placeholder="Buscar alimento…"
-                                   class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
-                            <div id="excluidos-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
+                        <!-- Obligatorios -->
+                        <div>
+                            <label class="mb-2 block text-sm font-medium text-slate-600" for="obligatorios-toggle">
+                                Alimentos obligatorios
+                            </label>
+                            <div class="relative" data-multiselect="obligatorios">
+                                <button type="button" id="obligatorios-toggle" aria-expanded="false"
+                                        class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
+                                    <span id="obligatorios-label" class="truncate">Ninguno seleccionado</span>
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+                                    </svg>
+                                </button>
+                                <div id="obligatorios-panel"
+                                     class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
+                                    <input id="obligatorios-search" type="search" placeholder="Buscar alimento…"
+                                           class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
+                                    <div id="obligatorios-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
+                                </div>
+                                <div id="obligatorios-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+                                <p id="obligatorios-aviso"
+                                   class="mt-2 hidden rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800 ring-1 ring-amber-100"></p>
+                            </div>
                         </div>
-                        <div id="excluidos-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+
+                        <!-- Excluidos -->
+                        <div>
+                            <label class="mb-2 block text-sm font-medium text-slate-600" for="excluidos-toggle">
+                                Alimentos excluidos
+                            </label>
+                            <div class="relative" data-multiselect="excluidos">
+                                <button type="button" id="excluidos-toggle" aria-expanded="false"
+                                        class="flex w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-600 transition hover:border-emerald-300">
+                                    <span id="excluidos-label" class="truncate">Ninguno seleccionado</span>
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+                                    </svg>
+                                </button>
+                                <div id="excluidos-panel"
+                                     class="multiselect-panel absolute z-30 mt-2 hidden w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-card">
+                                    <input id="excluidos-search" type="search" placeholder="Buscar alimento…"
+                                           class="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100">
+                                    <div id="excluidos-list" class="max-h-56 space-y-0.5 overflow-y-auto pr-1"></div>
+                                </div>
+                                <div id="excluidos-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+                            </div>
+                        </div>
                     </div>
-                </div>
+                </details>
             </section>
+
+            </div>
 
             <!-- ============================ ZONA 3 ============================ -->
-            <section id="results" class="hidden space-y-4">
-                <div class="flex items-center gap-3">
-                    <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">3</span>
-                    <div>
-                        <h2 class="text-base font-semibold text-slate-900">Cesta óptima</h2>
-                        <p class="text-xs text-slate-500">La combinación más económica para tu perfil</p>
-                    </div>
+            <div id="panel-resultados" class="hidden space-y-4 lg:block">
+
+                <!-- Estado vacío (móvil, antes de calcular) -->
+                <div id="resultados-vacio"
+                     class="rounded-3xl bg-white p-6 text-center shadow-card ring-1 ring-slate-100">
+                    <p class="text-sm font-semibold text-slate-800">Aún no has calculado tu dieta</p>
+                    <p class="mt-1 text-xs leading-relaxed text-slate-500">
+                        Ajusta tu perfil y tu presupuesto, y pulsa «Calcular dieta óptima».
+                    </p>
+                    <button id="ir-config" type="button"
+                            class="mt-4 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 lg:hidden">
+                        Ir a configurar
+                    </button>
                 </div>
 
-                <!-- Resumen -->
-                <div class="rounded-3xl bg-gradient-to-br from-emerald-600 to-teal-700 p-5 text-white shadow-card">
-                    <p class="text-[11px] uppercase tracking-widest text-emerald-100">Costo total estimado</p>
-                    <p id="res-costo" class="mt-1 text-3xl font-bold">$0.00</p>
-                    <p id="res-costo-ves" class="text-lg font-semibold text-emerald-50">Bs. 0,00</p>
-                    <p id="res-periodo" class="text-xs text-emerald-100">Total para 1 día</p>
-                    <p id="res-tasa" class="text-[11px] text-emerald-100/80">Tasa BCV: 36,00 Bs./USD</p>
-
-                    <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                        <div class="rounded-2xl bg-white/10 px-3 py-2">
-                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Calorías</p>
-                            <p id="res-calorias" class="text-sm font-semibold">0 kcal</p>
-                        </div>
-                        <div class="rounded-2xl bg-white/10 px-3 py-2">
-                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Proteínas</p>
-                            <p id="res-proteinas" class="text-sm font-semibold">0 g</p>
-                        </div>
-                        <div class="rounded-2xl bg-white/10 px-3 py-2">
-                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Carbohidratos</p>
-                            <p id="res-carbohidratos" class="text-sm font-semibold">0 g</p>
-                        </div>
-                        <div class="rounded-2xl bg-white/10 px-3 py-2">
-                            <p class="text-[10px] uppercase tracking-wide text-emerald-100">Grasas</p>
-                            <p id="res-grasas" class="text-sm font-semibold">0 g</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Gráfico de macros -->
-                <div class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
-                    <div class="mb-3 flex items-center justify-between gap-3">
+                <section id="results" class="hidden space-y-4">
+                    <div class="flex items-center gap-3">
+                        <span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">3</span>
                         <div>
-                            <h3 class="text-sm font-semibold text-slate-900">Distribución de calorías</h3>
-                            <span class="text-[11px] text-slate-400">Proteínas · Carbos · Grasas</span>
+                            <h2 class="text-base font-semibold text-slate-900">Cesta óptima</h2>
+                            <p class="text-xs text-slate-500">La combinación más económica para tu perfil</p>
                         </div>
-                        <div class="flex shrink-0 items-center gap-1" role="group" aria-label="Zoom del gráfico">
-                            <button id="zoom-out" type="button" aria-label="Alejar gráfico"
-                                    class="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-base font-bold text-slate-600 transition hover:bg-slate-200">−</button>
-                            <button id="zoom-in" type="button" aria-label="Acercar gráfico"
-                                    class="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-base font-bold text-slate-600 transition hover:bg-slate-200">+</button>
+                        <button id="editar-perfil" type="button"
+                                class="ml-auto shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 transition hover:text-emerald-700 lg:hidden">
+                            Editar
+                        </button>
+                    </div>
+
+                    <!-- Resumen -->
+                    <div class="rounded-3xl bg-gradient-to-br from-emerald-600 to-teal-700 p-5 text-white shadow-card">
+                        <p class="text-[11px] uppercase tracking-widest text-emerald-100">Costo total estimado</p>
+                        <p id="res-costo" class="mt-1 text-3xl font-bold">$0.00</p>
+                        <p id="res-costo-ves" class="text-lg font-semibold text-emerald-50">Bs. 0,00</p>
+                        <p id="res-periodo" class="text-xs text-emerald-100">Total para 1 día</p>
+                        <p id="res-tasa" class="text-[11px] text-emerald-100/80">Tasa BCV: 36,00 Bs./USD</p>
+
+                        <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                            <div class="rounded-2xl bg-white/10 px-3 py-2">
+                                <p class="text-[10px] uppercase tracking-wide text-emerald-100">Calorías</p>
+                                <p id="res-calorias" class="text-sm font-semibold">0 kcal</p>
+                            </div>
+                            <div class="rounded-2xl bg-white/10 px-3 py-2">
+                                <p class="text-[10px] uppercase tracking-wide text-emerald-100">Proteínas</p>
+                                <p id="res-proteinas" class="text-sm font-semibold">0 g</p>
+                            </div>
+                            <div class="rounded-2xl bg-white/10 px-3 py-2">
+                                <p class="text-[10px] uppercase tracking-wide text-emerald-100">Carbohidratos</p>
+                                <p id="res-carbohidratos" class="text-sm font-semibold">0 g</p>
+                            </div>
+                            <div class="rounded-2xl bg-white/10 px-3 py-2">
+                                <p class="text-[10px] uppercase tracking-wide text-emerald-100">Grasas</p>
+                                <p id="res-grasas" class="text-sm font-semibold">0 g</p>
+                            </div>
                         </div>
                     </div>
-                    <div id="macro-wrap" class="relative mx-auto h-56 max-h-[250px] w-full overflow-hidden">
-                        <canvas id="macroChart" role="img"
-                                aria-label="Gráfico de dona con la distribución de calorías entre proteínas, carbohidratos y grasas"></canvas>
-                    </div>
-                    <p class="mt-2 text-center text-[11px] text-slate-400">Pellizca el gráfico o usa − / + para hacer zoom.</p>
-                </div>
 
-                <!-- Explicabilidad del motor -->
-                <div id="sensibilidad-card"
-                     class="hidden rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
-                    <div class="mb-1 flex items-baseline justify-between gap-3">
-                        <h3 class="text-sm font-semibold text-slate-900">¿Qué encarece tu dieta?</h3>
-                        <span class="text-[11px] text-slate-400">Precios sombra</span>
-                    </div>
-                    <p class="text-xs leading-relaxed text-slate-500">
-                        Cuánto cambia el costo óptimo si exiges una unidad más de cada nutriente
-                        (restricciones que están moldeando la solución).
-                    </p>
-                    <p id="sensibilidad-resumen" class="mt-2 text-[11px] font-medium text-emerald-700"></p>
-                    <ul id="sensibilidad-list" class="mt-3 space-y-2"></ul>
-                    <p class="mt-3 text-[11px] leading-relaxed text-slate-400">
-                        Calculado sobre la relajación lineal (LP). Los nutrientes sin barra no son
-                        restrictivos con los datos actuales.
-                    </p>
-                </div>
+                    <!-- Costo por alimento + macros -->
+                    <div class="grid gap-4 xl:grid-cols-2">
+                        <div class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                            <div class="mb-3">
+                                <h3 class="text-sm font-semibold text-slate-900">¿En qué se va el dinero?</h3>
+                                <span class="text-[11px] text-slate-400">Costo por alimento</span>
+                            </div>
+                            <div id="costo-wrap" class="chart-box">
+                                <canvas id="costoChart" role="img"
+                                        aria-label="Gráfico de barras con el costo de cada alimento de la cesta"></canvas>
+                            </div>
+                            <p id="costo-resumen" class="mt-2 text-center text-[11px] text-slate-400"></p>
+                        </div>
 
-                <!-- Tarjetas -->
-                <div id="cards" class="grid grid-cols-1 gap-3 sm:grid-cols-2"></div>
-            </section>
+                        <div class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                            <div class="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <h3 class="text-sm font-semibold text-slate-900">Distribución de calorías</h3>
+                                    <span class="text-[11px] text-slate-400">Proteínas · Carbos · Grasas</span>
+                                </div>
+                                <div class="flex shrink-0 items-center gap-1" role="group" aria-label="Zoom del gráfico">
+                                    <button id="zoom-out" type="button" aria-label="Alejar gráfico"
+                                            class="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-base font-bold text-slate-600 transition hover:bg-slate-200">−</button>
+                                    <button id="zoom-in" type="button" aria-label="Acercar gráfico"
+                                            class="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-base font-bold text-slate-600 transition hover:bg-slate-200">+</button>
+                                </div>
+                            </div>
+                            <div id="macro-wrap" class="relative mx-auto h-56 max-h-[250px] w-full overflow-hidden">
+                                <canvas id="macroChart" role="img"
+                                        aria-label="Gráfico de dona con la distribución de calorías entre proteínas, carbohidratos y grasas"></canvas>
+                            </div>
+                            <p class="mt-2 text-center text-[11px] text-slate-400">Pellizca el gráfico o usa − / + para hacer zoom.</p>
+                        </div>
+                    </div>
+
+                    <!-- Cumplimiento de objetivos -->
+                    <div class="rounded-3xl bg-white p-5 shadow-card ring-1 ring-slate-100">
+                        <div class="mb-1 flex items-baseline justify-between gap-3">
+                            <h3 class="text-sm font-semibold text-slate-900">Cumplimiento de objetivos</h3>
+                            <span class="text-[11px] text-slate-400">% del requerimiento</span>
+                        </div>
+                        <p class="text-xs leading-relaxed text-slate-500">
+                            Qué porcentaje de cada meta cubre la cesta. La línea punteada marca el 100%.
+                        </p>
+                        <div id="cumplimiento-wrap" class="chart-box mt-3">
+                            <canvas id="cumplimientoChart" role="img"
+                                    aria-label="Gráfico de barras con el porcentaje cumplido de calorías, proteínas, carbohidratos y grasas"></canvas>
+                        </div>
+                        <p id="cumplimiento-resumen" class="mt-2 text-center text-[11px] text-slate-400"></p>
+                    </div>
+
+                    <!-- Tarjetas -->
+                    <div id="cards" class="grid grid-cols-1 gap-3 sm:grid-cols-2"></div>
+                </section>
+            </div>
         </main>
     </div>
 
     <!-- Botón flotante -->
     <div class="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/70 bg-white/90 backdrop-blur pb-safe">
-        <div class="mx-auto w-full max-w-md px-4 pt-3 md:max-w-2xl lg:max-w-4xl">
+        <div class="mx-auto w-full max-w-md px-4 pt-3 md:max-w-2xl lg:max-w-6xl">
             <button id="btn-calcular" type="button"
                     class="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3.5 text-base font-semibold text-white shadow-card transition hover:bg-emerald-700 active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60">
                 <span id="btn-spinner"
