@@ -362,6 +362,12 @@ async function cargarAlimentos() {
 async function calcularDieta() {
     ocultarAlerta();
 
+    // El slider de presupuesto representa el TOTAL del periodo elegido, pero el
+    // backend siempre optimiza para 1 día. Enviamos el equivalente diario para
+    // que, al multiplicar por el plazo en pantalla, el costo no supere el total.
+    const plazo = Number(state.plazo) || 1;
+    const presupuestoTotal = Number(document.getElementById("presupuesto").value) || 0;
+
     const payload = {
         peso: Number(document.getElementById("peso").value),
         altura: Number(document.getElementById("altura").value),
@@ -369,7 +375,7 @@ async function calcularDieta() {
         genero: state.genero,
         actividad: state.actividad,
         objetivo: state.objetivo,
-        presupuesto_maximo: Number(document.getElementById("presupuesto").value),
+        presupuesto_maximo: presupuestoTotal / plazo,
         alimentos_obligatorios: [...state.obligatorios],
         alimentos_excluidos: [...state.excluidos],
     };
