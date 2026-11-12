@@ -149,6 +149,71 @@ input[type="range"]:focus-visible {
     }
 }
 
+/* ---------------------------------------------------------------------------
+   Interfaz gestual
+   --------------------------------------------------------------------------- */
+/* Solo se permite el desplazamiento vertical en las zonas con gestos
+   horizontales: así el navegador no se queda el swipe ni el pinch. */
+#results,
+#macro-wrap {
+    touch-action: pan-y;
+}
+
+/* La hoja inferior no necesita scroll: captura todos los punteros. */
+#sheet {
+    touch-action: none;
+}
+
+/* Evita que la pulsación larga seleccione texto o abra el menú de iOS. */
+.food-card {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+.sheet {
+    transform: translateY(100%);
+    transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+    will-change: transform;
+}
+
+.sheet.is-open {
+    transform: translateY(0);
+}
+
+#toast.is-visible {
+    opacity: 1;
+}
+
+#macroChart {
+    transform-origin: center center;
+    transition: transform 0.18s ease;
+}
+
+#gesture-hint.is-hidden {
+    display: none;
+}
+
+/* La flecha por defecto de <details> duplicaría el indicador propio. */
+details > summary::-webkit-details-marker {
+    display: none;
+}
+
+/* --- Barras de sensibilidad (precios sombra) --- */
+.sens-bar {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 9999px;
+    background: #e2e8f0;
+}
+
+.sens-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: 9999px;
+    background: linear-gradient(90deg, #34d399, #059669);
+}
+
 /* --- Respeta usuarios que prefieren menos movimiento --- */
 @media (prefers-reduced-motion: reduce) {
     *,

@@ -70,6 +70,15 @@ COLUMNAS_REQUERIDAS = [
 
 NUTRIENTES = ("Calorias", "Proteinas", "Carbohidratos", "Grasas")
 
+# Restricciones nutricionales y su lectura económica (precios sombra).
+RESTRICCIONES_NUTRICIONALES = (
+    ("Minimo_Calorias", "Calorias", "minimo", "kcal"),
+    ("Minimo_Proteinas", "Proteinas", "minimo", "g"),
+    ("Minimo_Carbohidratos", "Carbohidratos", "minimo", "g"),
+    ("Maximo_Carbohidratos", "Carbohidratos", "maximo", "g"),
+    ("Maximo_Grasas", "Grasas", "maximo", "g"),
+)
+
 MENSAJE_IMPOSSIBLE = (
     "Tus requerimientos son matemáticamente imposibles de cumplir "
     "con los alimentos actuales."
@@ -138,6 +147,10 @@ def parsear_argumentos(argv=None) -> argparse.Namespace:
         "--excluir", action="append", metavar="ALIMENTO",
         help="Alimento excluido, 0 porciones (repetible).",
     )
+    parser.add_argument(
+        "--sensibilidad", action="store_true",
+        help="Muestra precios sombra de la relajación lineal (duales).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -195,7 +208,7 @@ def resolver_indices(df: pd.DataFrame, nombres, etiqueta: str) -> list[int]:
     return indices
 
 
-def resolver_dieta(
+def construir_problema(
     df: pd.DataFrame,
     min_calorias: float,
     min_proteinas: float,
@@ -206,15 +219,16 @@ def resolver_dieta(
     presupuesto_maximo: float | None = None,
     alimentos_obligatorios: list[str] | None = None,
     alimentos_excluidos: list[str] | None = None,
-) -> dict:
+    continua: bool = False,
+):
     """
-    Construye y resuelve el MILP. Devuelve un dict con los resultados o
-    {"estado": <estado no óptimo>} si no hay solución.
+    Construye el modelo lineal (sin resolverlo).
 
-    Parámetros opcionales:
-        presupuesto_maximo: cota superior del costo total (<=).
-        alimentos_obligatorios: nombres que deben comprarse al menos 1 vez.
-        alimentos_excluidos: nombres que no pueden comprarse (x_i == 0).
+    continua=False -> MILP con variables enteras (modelo real).
+    continua=True  -> relajación lineal, necesaria para obtener los precios
+                      sombra: CBC solo reporta duales en problemas continuos.
+
+    Devuelve (problema, x).
     """
     # LpMinimize: el solver busca el menor costo posible.
     problema = pulp.LpProblem("Problema_de_la_Dieta", pulp.LpMinimize)
@@ -223,12 +237,13 @@ def resolver_dieta(
     # lowBound=0  -> no se compran cantidades negativas.
     # upBound=M    -> máximo de porciones del mismo alimento (cota de caja).
     # cat="Integer"-> variables enteras: el modelo es MILP, no LP continuo.
+    categoria = "Continuous" if continua else "Integer"
     x = {
         i: pulp.LpVariable(
             name=f"x_{i}",
             lowBound=0,
             upBound=max_porciones_por_alimento,
-            cat="Integer",
+            cat=categoria,
         )
         for i in range(len(df))
     }
@@ -284,6 +299,43 @@ def resolver_dieta(
     for i in excluidos:
         problema += x[i] == 0, f"Excluido_x_{i}"
 
+    return problema, x
+
+
+def resolver_dieta(
+    df: pd.DataFrame,
+    min_calorias: float,
+    min_proteinas: float,
+    min_carbohidratos: float,
+    max_carbohidratos: float,
+    max_grasas: float,
+    max_porciones_por_alimento: int,
+    presupuesto_maximo: float | None = None,
+    alimentos_obligatorios: list[str] | None = None,
+    alimentos_excluidos: list[str] | None = None,
+) -> dict:
+    """
+    Construye y resuelve el MILP. Devuelve un dict con los resultados o
+    {"estado": <estado no óptimo>} si no hay solución.
+
+    Parámetros opcionales:
+        presupuesto_maximo: cota superior del costo total (<=).
+        alimentos_obligatorios: nombres que deben comprarse al menos 1 vez.
+        alimentos_excluidos: nombres que no pueden comprarse (x_i == 0).
+    """
+    problema, x = construir_problema(
+        df,
+        min_calorias=min_calorias,
+        min_proteinas=min_proteinas,
+        min_carbohidratos=min_carbohidratos,
+        max_carbohidratos=max_carbohidratos,
+        max_grasas=max_grasas,
+        max_porciones_por_alimento=max_porciones_por_alimento,
+        presupuesto_maximo=presupuesto_maximo,
+        alimentos_obligatorios=alimentos_obligatorios,
+        alimentos_excluidos=alimentos_excluidos,
+    )
+
     # --- Resolución ---
     # CBC resuelve con branch-and-bound. msg=False silencia su log.
     # (No se usa threads=1: con esta versión de CBC en Windows se cuelga.)
@@ -310,6 +362,59 @@ def resolver_dieta(
             for nutriente in NUTRIENTES
         },
     }
+
+
+def calcular_sensibilidad(
+    df: pd.DataFrame,
+    costo_total: float | None = None,
+    **parametros,
+) -> dict:
+    """
+    Resuelve la relajación lineal y extrae los precios sombra (duales).
+
+    - Restricción de mínimo (>=): π >= 0, costo marginal de exigir +1 unidad.
+    - Restricción de máximo (<=): π <= 0, ahorro marginal de relajar el techo.
+
+    Lanza pulp.PulpSolverError si CBC falla (igual que resolver_dieta).
+    """
+    problema, _ = construir_problema(df, continua=True, **parametros)
+    problema.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    if problema.status != pulp.LpStatusOptimal:
+        return {
+            "costo_relajado": None,
+            "precios_sombra": [],
+            "mensaje": "El modelo no tiene solución óptima; no hay duales.",
+        }
+
+    costo_relajado = float(pulp.value(problema.objective) or 0)
+
+    precios = []
+    for nombre, nutriente, tipo, unidad in RESTRICCIONES_NUTRICIONALES:
+        restriccion = problema.constraints.get(nombre)
+        pi = None if restriccion is None else getattr(restriccion, "pi", None)
+        if pi is None:
+            continue
+        pi = float(pi)
+        precios.append(
+            {
+                "restriccion": nombre,
+                "nutriente": nutriente,
+                "tipo": tipo,
+                "unidad": unidad,
+                "por_unidad": pi,
+                "por_100_unidades": pi * 100,
+                "activa": abs(pi) > 1e-9,
+            }
+        )
+
+    resultado = {
+        "costo_relajado": costo_relajado,
+        "precios_sombra": precios,
+    }
+    if costo_total is not None:
+        resultado["costo_integralidad"] = costo_total - costo_relajado
+    return resultado
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +472,36 @@ def imprimir_resultados(resultado: dict, args: argparse.Namespace) -> None:
         print(f"  {nutriente:<15} {total:>10.2f}")
 
 
+def imprimir_sensibilidad(sensibilidad: dict) -> None:
+    """Muestra los precios sombra de la relajación lineal."""
+    print()
+    print("=" * 60)
+    print("ANÁLISIS DE SENSIBILIDAD (RELAJACIÓN LINEAL)")
+    print("=" * 60)
+
+    if sensibilidad.get("costo_relajado") is None:
+        print(sensibilidad.get("mensaje", "No disponible."))
+        return
+
+    print(f"Costo continuo (cota inferior): ${sensibilidad['costo_relajado']:,.2f}")
+    if "costo_integralidad" in sensibilidad:
+        print(
+            "Costo de la integralidad:       "
+            f"${sensibilidad['costo_integralidad']:,.2f}"
+        )
+
+    print()
+    print("Precio sombra por cada 100 unidades adicionales:")
+    for precio in sensibilidad["precios_sombra"]:
+        efecto = "sube" if precio["por_unidad"] >= 0 else "baja"
+        estado = "activa" if precio["activa"] else "no activa"
+        print(
+            f"  {precio['nutriente']:<15} {precio['tipo']:<7} "
+            f"({precio['unidad']:<4}) ${precio['por_100_unidades']:>8.4f} "
+            f"({efecto}, {estado})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 5. PUNTO DE ENTRADA
 # ---------------------------------------------------------------------------
@@ -374,25 +509,38 @@ def main(argv=None) -> int:
     args = parsear_argumentos(argv)
     df = cargar_alimentos()
 
+    parametros = dict(
+        min_calorias=args.min_calorias,
+        min_proteinas=args.min_proteinas,
+        min_carbohidratos=args.min_carbohidratos,
+        max_carbohidratos=args.max_carbohidratos,
+        max_grasas=args.max_grasas,
+        max_porciones_por_alimento=args.max_porciones,
+        presupuesto_maximo=args.presupuesto,
+        alimentos_obligatorios=args.obligatorio,
+        alimentos_excluidos=args.excluir,
+    )
+
     try:
-        resultado = resolver_dieta(
-            df,
-            min_calorias=args.min_calorias,
-            min_proteinas=args.min_proteinas,
-            min_carbohidratos=args.min_carbohidratos,
-            max_carbohidratos=args.max_carbohidratos,
-            max_grasas=args.max_grasas,
-            max_porciones_por_alimento=args.max_porciones,
-            presupuesto_maximo=args.presupuesto,
-            alimentos_obligatorios=args.obligatorio,
-            alimentos_excluidos=args.excluir,
-        )
+        resultado = resolver_dieta(df, **parametros)
     except ValueError as error:
         # Nombre de alimento inexistente o combinación contradictoria.
         print(f"Error: {error}")
         return 2
 
     imprimir_resultados(resultado, args)
+
+    if args.sensibilidad and resultado["estado"] == "Optimal":
+        try:
+            sensibilidad = calcular_sensibilidad(
+                df,
+                costo_total=resultado["costo_total"],
+                **parametros,
+            )
+        except ValueError as error:
+            print(f"Error: {error}")
+            return 2
+        imprimir_sensibilidad(sensibilidad)
 
     # Código de salida 1 si no hubo óptimo: útil para scripts/CI.
     return 0 if resultado["estado"] == "Optimal" else 1

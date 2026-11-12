@@ -26,6 +26,11 @@ Endpoint:
         }
     Calcula TMB (Mifflin-St Jeor), TDEE, macros y devuelve el mismo JSON.
 
+    POST /sensibilidad
+    Body JSON: los mismos campos que /optimizar.
+    Devuelve el costo de la relajación lineal y los precios sombra (duales)
+    de cada restricción nutricional: "¿qué nutriente encarece la dieta?".
+
 Ejecutar:
     pip install flask flask-cors
     python app.py
@@ -150,6 +155,16 @@ AJUSTE_POR_OBJETIVO = {
 }
 
 NUTRIENTES = ("Calorias", "Proteinas", "Carbohidratos", "Grasas")
+
+# Restricciones nutricionales y su lectura económica.
+# (nombre de la restricción, nutriente, tipo, unidad)
+RESTRICCIONES_NUTRICIONALES = (
+    ("Minimo_Calorias", "Calorias", "minimo", "kcal"),
+    ("Minimo_Proteinas", "Proteinas", "minimo", "g"),
+    ("Minimo_Carbohidratos", "Carbohidratos", "minimo", "g"),
+    ("Maximo_Carbohidratos", "Carbohidratos", "maximo", "g"),
+    ("Maximo_Grasas", "Grasas", "maximo", "g"),
+)
 
 MENSAJE_IMPOSSIBLE = (
     "Tus requerimientos son matemáticamente imposibles de cumplir "
@@ -402,7 +417,7 @@ def resolver_indices(df: pd.DataFrame, nombres, etiqueta: str) -> list[int]:
     return indices
 
 
-def resolver_dieta(
+def construir_problema(
     min_calorias,
     min_proteinas,
     min_carbohidratos,
@@ -412,12 +427,16 @@ def resolver_dieta(
     presupuesto_maximo=None,
     alimentos_obligatorios=None,
     alimentos_excluidos=None,
-) -> dict:
+    continua=False,
+):
     """
-    Construye y resuelve el MILP.
+    Construye el modelo lineal (sin resolverlo).
 
-    Lanza ModeloNoOptimo si el solver no llega a una solución óptima.
-    Devuelve un dict serializable a JSON cuando hay óptimo.
+    continua=False -> variables enteras: MILP real que devuelve la dieta.
+    continua=True  -> relajación lineal: se usa para extraer los precios
+                      sombra (duales), que CBC solo reporta para LP.
+
+    Devuelve (problema, x), donde x es el diccionario de variables x_i.
     """
     # Nombre único por petición: CBC crea archivos temporales con el nombre
     # del problema; con peticiones concurrentes un nombre fijo provocaría
@@ -430,12 +449,15 @@ def resolver_dieta(
     #   upBound=M    -> cota superior: ninguna dieta puede pedir más de M
     #                   porciones del mismo alimento (restricción de caja).
     #   cat="Integer"-> variable entera: convierte el modelo en MILP.
+    #                   En la relajación se usa "Continuous" para que CBC
+    #                   escriba los valores duales en el archivo de solución.
+    categoria = "Continuous" if continua else "Integer"
     x = {
         i: pulp.LpVariable(
             name=f"x_{i}",
             lowBound=0,
             upBound=max_porciones_por_alimento,
-            cat="Integer",
+            cat=categoria,
         )
         for i in range(len(df))
     }
@@ -495,6 +517,38 @@ def resolver_dieta(
     for i in excluidos:
         problema += x[i] == 0, f"Excluido_x_{i}"
 
+    return problema, x
+
+
+def resolver_dieta(
+    min_calorias,
+    min_proteinas,
+    min_carbohidratos,
+    max_carbohidratos,
+    max_grasas,
+    max_porciones_por_alimento,
+    presupuesto_maximo=None,
+    alimentos_obligatorios=None,
+    alimentos_excluidos=None,
+) -> dict:
+    """
+    Construye y resuelve el MILP.
+
+    Lanza ModeloNoOptimo si el solver no llega a una solución óptima.
+    Devuelve un dict serializable a JSON cuando hay óptimo.
+    """
+    problema, x = construir_problema(
+        min_calorias=min_calorias,
+        min_proteinas=min_proteinas,
+        min_carbohidratos=min_carbohidratos,
+        max_carbohidratos=max_carbohidratos,
+        max_grasas=max_grasas,
+        max_porciones_por_alimento=max_porciones_por_alimento,
+        presupuesto_maximo=presupuesto_maximo,
+        alimentos_obligatorios=alimentos_obligatorios,
+        alimentos_excluidos=alimentos_excluidos,
+    )
+
     # --- Resolución ---
     # CBC aplica branch-and-bound sobre la relajación lineal. msg=False
     # silencia el log. (No se usa threads=1: en esta versión de CBC en
@@ -514,12 +568,18 @@ def resolver_dieta(
     porciones = {i: int(round(x[i].value() or 0)) for i in x}
 
     # Solo alimentos efectivamente comprados (porciones > 0).
+    # Los macros se devuelven POR PORCIÓN: el frontend los usa para mostrar
+    # el detalle de un alimento (gesto de pulsación larga) sin otra llamada.
     alimentos = [
         {
             "alimento": str(df.loc[i, "Alimento"]),
             "porciones": cantidad,
-            "costo_unitario": float(df.loc[i, "Costo"]),
+            "costo_unitario": round(float(df.loc[i, "Costo"]), 2),
             "costo_subtotal": round(float(df.loc[i, "Costo"]) * cantidad, 2),
+            "calorias": round(float(df.loc[i, "Calorias"]), 2),
+            "proteinas": round(float(df.loc[i, "Proteinas"]), 2),
+            "carbohidratos": round(float(df.loc[i, "Carbohidratos"]), 2),
+            "grasas": round(float(df.loc[i, "Grasas"]), 2),
         }
         for i, cantidad in porciones.items()
         if cantidad > 0
@@ -551,7 +611,85 @@ def resolver_dieta(
 
 
 # ---------------------------------------------------------------------------
-# 5. ENDPOINT
+# 5. ANÁLISIS DE SENSIBILIDAD (EXPLICABILIDAD DEL MOTOR)
+# ---------------------------------------------------------------------------
+def calcular_sensibilidad(parametros: dict, costo_total=None) -> dict:
+    """
+    Resuelve la RELAJACIÓN LINEAL del mismo modelo y extrae los precios
+    sombra (variables duales) de cada restricción nutricional.
+
+    Interpretación en un problema de minimización:
+      - Restricción de mínimo (>=): π >= 0. Costo marginal de exigir una
+        unidad más del nutriente.
+      - Restricción de máximo (<=): π <= 0. Ahorro marginal de permitir una
+        unidad más (relajar el techo).
+
+    CBC solo escribe duales para problemas continuos, por eso se reconstruye
+    el modelo con cat="Continuous" en lugar de reutilizar el MILP.
+    """
+    try:
+        problema, _ = construir_problema(continua=True, **parametros)
+        problema.solve(pulp.PULP_CBC_CMD(msg=False))
+    except (pulp.PulpSolverError, ValueError) as error:
+        return {
+            "costo_relajado": None,
+            "precios_sombra": [],
+            "mensaje": f"No se pudo calcular la sensibilidad: {error}",
+        }
+
+    if problema.status != pulp.LpStatusOptimal:
+        return {
+            "costo_relajado": None,
+            "precios_sombra": [],
+            "mensaje": "El modelo no tiene solución óptima; no hay duales.",
+        }
+
+    costo_relajado = round(float(pulp.value(problema.objective) or 0), 2)
+
+    precios = []
+    for nombre, nutriente, tipo, unidad in RESTRICCIONES_NUTRICIONALES:
+        restriccion = problema.constraints.get(nombre)
+        pi = None if restriccion is None else getattr(restriccion, "pi", None)
+        if pi is None:
+            # Versiones de CBC que no reportan duales: se omite la fila.
+            continue
+        pi = float(pi)
+        precios.append(
+            {
+                "restriccion": nombre,
+                "nutriente": nutriente,
+                "tipo": tipo,
+                "unidad": unidad,
+                "por_unidad": round(pi, 8),
+                "por_100_unidades": round(pi * 100, 4),
+                # Una restricción es "activa" (binding) si su precio sombra
+                # no es cero: es la que está moldeando el costo óptimo.
+                "activa": abs(pi) > 1e-9,
+            }
+        )
+
+    resultado = {
+        "costo_relajado": costo_relajado,
+        "precios_sombra": precios,
+    }
+    if costo_total is not None:
+        # Diferencia entre el óptimo entero y el continuo: "costo de la
+        # integralidad" (ver fundamento teórico, punto 2).
+        resultado["costo_integralidad"] = round(costo_total - costo_relajado, 2)
+    return resultado
+
+
+def resolver_con_sensibilidad(parametros: dict) -> dict:
+    """Resuelve el MILP y le adjunta el análisis de sensibilidad."""
+    resultado = resolver_dieta(**parametros)
+    resultado["sensibilidad"] = calcular_sensibilidad(
+        parametros, resultado["costo_total"]
+    )
+    return resultado
+
+
+# ---------------------------------------------------------------------------
+# 6. ENDPOINTS
 # ---------------------------------------------------------------------------
 @app.post("/optimizar")
 def optimizar():
@@ -562,7 +700,7 @@ def optimizar():
             **validar_parametros(payload),
             **leer_parametros_opcionales(payload),
         }
-        resultado = resolver_dieta(**parametros)
+        resultado = resolver_con_sensibilidad(parametros)
     except ValueError as error:
         # Error de entrada del cliente: 400.
         return jsonify({"error": str(error)}), 400
@@ -600,7 +738,7 @@ def optimizar_perfil():
             **calcular_parametros_desde_perfil(payload),
             **leer_parametros_opcionales(payload),
         }
-        resultado = resolver_dieta(**parametros)
+        resultado = resolver_con_sensibilidad(parametros)
     except ValueError as error:
         # Datos faltantes o inválidos: 400.
         return jsonify({"error": str(error)}), 400
@@ -614,6 +752,44 @@ def optimizar_perfil():
         return jsonify({"error": f"Error del solver: {error}"}), 500
 
     return jsonify(resultado), 200
+
+
+@app.post("/sensibilidad")
+def sensibilidad():
+    """
+    Devuelve solo el análisis de sensibilidad: costo de la relajación lineal,
+    costo de la integralidad y precio sombra de cada restricción nutricional.
+
+    Es el endpoint que alimenta el panel "¿Qué encarece tu dieta?".
+    """
+    payload = request.get_json(silent=True)
+
+    try:
+        parametros = {
+            **validar_parametros(payload),
+            **leer_parametros_opcionales(payload),
+        }
+        resultado = resolver_con_sensibilidad(parametros)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except ModeloNoOptimo as error:
+        app.logger.warning(
+            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+        )
+        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
+    except pulp.PulpSolverError as error:
+        return jsonify({"error": f"Error del solver: {error}"}), 500
+
+    return (
+        jsonify(
+            {
+                "estado": resultado["estado"],
+                "costo_total": resultado["costo_total"],
+                **resultado["sensibilidad"],
+            }
+        ),
+        200,
+    )
 
 
 if __name__ == "__main__":

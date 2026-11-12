@@ -49,6 +49,15 @@ const numberFmt = (value, decimals = 0) =>
 const multiselects = {};
 let ultimoResultado = null;
 let macroChart = null;
+let chartZoom = 1;
+let toastTimer = null;
+
+const ETIQUETAS_NUTRIENTE = {
+    Calorias: "Calorías",
+    Proteinas: "Proteínas",
+    Carbohidratos: "Carbohidratos",
+    Grasas: "Grasas",
+};
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -57,6 +66,9 @@ function init() {
     bindChips();
     initMultiselect("obligatorios");
     initMultiselect("excluidos");
+    initGestures();
+    initSheet();
+    initPaneles();
     document.getElementById("btn-calcular").addEventListener("click", calcularDieta);
     cargarAlimentos();
 }
@@ -455,6 +467,8 @@ function renderResultados(data, { scroll = true } = {}) {
         );
     });
 
+    renderSensibilidad(data.sensibilidad);
+
     if (scroll) {
         results.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -557,7 +571,25 @@ function crearTarjeta(item, index) {
 
     datos.append(crearDato("Porciones", String(porciones)));
 
-    card.append(cabecera, datos);
+    // Respaldo accesible del gesto de pulsación larga.
+    const botonDetalle = document.createElement("button");
+    botonDetalle.type = "button";
+    botonDetalle.className =
+        "mt-3 w-full rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700 focus-visible:ring-2 focus-visible:ring-emerald-500";
+    botonDetalle.textContent = "Ver detalle";
+    botonDetalle.addEventListener("click", () => abrirSheet(item));
+
+    card.append(cabecera, datos, botonDetalle);
+
+    if (window.NutriGestures) {
+        NutriGestures.attach(card, {
+            swipe: false,
+            pinch: false,
+            doubleTap: false,
+        });
+        card.addEventListener("nutricost:longpress", () => abrirSheet(item));
+    }
+
     return card;
 }
 
@@ -599,4 +631,288 @@ function mostrarAlerta(mensaje) {
 
 function ocultarAlerta() {
     document.getElementById("alert").classList.add("hidden");
+}
+
+/* ===========================================================================
+   Interfaz gestual
+   =========================================================================== */
+function initGestures() {
+    if (!window.NutriGestures) {
+        console.warn("Motor de gestos no disponible (gestures.js).");
+        return;
+    }
+
+    // --- Swipe horizontal sobre los resultados: cambia el plazo ---
+    const results = document.getElementById("results");
+    if (results) {
+        NutriGestures.attach(results, {
+            longPress: false,
+            pinch: false,
+            doubleTap: false,
+        });
+
+        results.addEventListener("nutricost:swipe", (event) => {
+            const { direction } = event.detail;
+            if (direction !== "left" && direction !== "right") return;
+
+            const plazos = [1, 7, 30];
+            const actual = Math.max(0, plazos.indexOf(Number(state.plazo)));
+            const siguiente =
+                direction === "left"
+                    ? (actual + 1) % plazos.length
+                    : (actual - 1 + plazos.length) % plazos.length;
+
+            const chip = document.querySelector(
+                `.chip[data-group="plazo"][data-value="${plazos[siguiente]}"]`
+            );
+            if (!chip) return;
+
+            seleccionarChip(chip);
+            mostrarToast(
+                `Plazo: ${plazos[siguiente]} ${plazos[siguiente] === 1 ? "día" : "días"}`
+            );
+        });
+    }
+
+    // --- Pinch sobre el gráfico: zoom de la dona ---
+    const wrap = document.getElementById("macro-wrap");
+    if (wrap) {
+        NutriGestures.attach(wrap, {
+            swipe: false,
+            longPress: false,
+            doubleTap: false,
+        });
+        wrap.addEventListener("nutricost:pinch", (event) => {
+            zoomChart(event.detail.scale);
+        });
+    }
+
+    // --- Doble toque en un slider: restaura su valor por defecto ---
+    document.querySelectorAll('input[type="range"]').forEach((range) => {
+        NutriGestures.attach(range, {
+            swipe: false,
+            longPress: false,
+            pinch: false,
+        });
+        range.addEventListener("nutricost:doubletap", () => {
+            range.value = range.defaultValue;
+            // Reutiliza el sincronizador existente (número + relleno).
+            range.dispatchEvent(new Event("input", { bubbles: true }));
+            mostrarToast("Valor restaurado");
+        });
+    });
+}
+
+function zoomChart(factor, avisar = false) {
+    chartZoom = Math.min(1.6, Math.max(0.8, chartZoom * factor));
+    const canvas = document.getElementById("macroChart");
+    if (canvas) {
+        canvas.style.transform = `scale(${chartZoom.toFixed(3)})`;
+    }
+    if (avisar) {
+        mostrarToast(`Zoom ${Math.round(chartZoom * 100)}%`);
+    }
+}
+
+function initPaneles() {
+    const hint = document.getElementById("gesture-hint");
+    const cerrar = document.getElementById("gesture-hint-close");
+    if (hint && cerrar) {
+        cerrar.addEventListener("click", () => hint.classList.add("is-hidden"));
+    }
+
+    document
+        .getElementById("zoom-in")
+        ?.addEventListener("click", () => zoomChart(1.15, true));
+    document
+        .getElementById("zoom-out")
+        ?.addEventListener("click", () => zoomChart(1 / 1.15, true));
+}
+
+/* ===========================================================================
+   Hoja de detalle (pulsación larga / botón "Ver detalle")
+   =========================================================================== */
+function initSheet() {
+    const backdrop = document.getElementById("sheet-backdrop");
+    const sheet = document.getElementById("sheet");
+    const cerrar = document.getElementById("sheet-close");
+    if (!backdrop || !sheet || !cerrar) return;
+
+    backdrop.addEventListener("click", cerrarSheet);
+    cerrar.addEventListener("click", cerrarSheet);
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") cerrarSheet();
+    });
+
+    if (window.NutriGestures) {
+        NutriGestures.attach(sheet, {
+            swipeDistance: 45,
+            longPress: false,
+            pinch: false,
+            doubleTap: false,
+        });
+        sheet.addEventListener("nutricost:swipe", (event) => {
+            if (event.detail.direction === "down") cerrarSheet();
+        });
+    }
+}
+
+function abrirSheet(item) {
+    const sheet = document.getElementById("sheet");
+    const backdrop = document.getElementById("sheet-backdrop");
+    const titulo = document.getElementById("sheet-title");
+    const body = document.getElementById("sheet-body");
+    if (!sheet || !backdrop || !titulo || !body) return;
+
+    const porciones = Number(item.porciones) || 0;
+    const escalar = (valor) => (Number(valor) || 0) * porciones;
+
+    titulo.textContent = item.alimento;
+    body.replaceChildren();
+
+    body.append(
+        crearDato(
+            "Porciones",
+            `${porciones} ${porciones === 1 ? "porción" : "porciones"}`
+        ),
+        crearDato("Costo subtotal", money.format(Number(item.costo_subtotal) || 0)),
+        crearDato("Calorías (total)", `${numberFmt(escalar(item.calorias))} kcal`),
+        crearDato("Proteínas (total)", `${numberFmt(escalar(item.proteinas), 1)} g`),
+        crearDato(
+            "Carbohidratos (total)",
+            `${numberFmt(escalar(item.carbohidratos), 1)} g`
+        ),
+        crearDato("Grasas (total)", `${numberFmt(escalar(item.grasas), 1)} g`)
+    );
+
+    backdrop.classList.remove("hidden");
+    sheet.classList.remove("hidden");
+    document.body.classList.add("overflow-hidden");
+
+    // Fuerza un reflow para que el navegador registre el estado inicial y
+    // la transición de translateY se ejecute (más fiable que rAF, que puede
+    // estrangularse en pestañas de fondo o en modo headless).
+    void sheet.offsetHeight;
+    sheet.classList.add("is-open");
+
+    document.getElementById("sheet-close")?.focus();
+}
+
+function cerrarSheet() {
+    const sheet = document.getElementById("sheet");
+    const backdrop = document.getElementById("sheet-backdrop");
+    if (!sheet || sheet.classList.contains("hidden")) return;
+
+    sheet.classList.remove("is-open");
+    document.body.classList.remove("overflow-hidden");
+
+    window.setTimeout(() => {
+        sheet.classList.add("hidden");
+        backdrop?.classList.add("hidden");
+    }, 250);
+}
+
+/* ===========================================================================
+   Explicabilidad: precios sombra
+   =========================================================================== */
+function renderSensibilidad(sensibilidad) {
+    const card = document.getElementById("sensibilidad-card");
+    const lista = document.getElementById("sensibilidad-list");
+    const resumen = document.getElementById("sensibilidad-resumen");
+    if (!card || !lista || !resumen) return;
+
+    const precios = Array.isArray(sensibilidad?.precios_sombra)
+        ? sensibilidad.precios_sombra
+        : [];
+
+    if (
+        !sensibilidad ||
+        !sensibilidad.precios_sombra ||
+        precios.length === 0 ||
+        sensibilidad.costo_relajado == null
+    ) {
+        card.classList.add("hidden");
+        return;
+    }
+
+    card.classList.remove("hidden");
+
+    const integralidad = Number(sensibilidad.costo_integralidad);
+    resumen.textContent =
+        `Costo continuo: $${Number(sensibilidad.costo_relajado).toFixed(2)}` +
+        ` · Costo entero: $${Number(ultimoResultado?.costo_total || 0).toFixed(2)}` +
+        (Number.isFinite(integralidad)
+            ? ` · Costo de la integralidad: $${integralidad.toFixed(2)}`
+            : "");
+
+    const activos = precios.filter((precio) => precio.activa);
+    const filas = activos.length > 0 ? activos : precios;
+    const maximo = Math.max(
+        ...filas.map((precio) => Math.abs(Number(precio.por_100_unidades) || 0)),
+        1e-9
+    );
+
+    lista.replaceChildren();
+
+    filas.forEach((precio) => {
+        const valor = Number(precio.por_100_unidades) || 0;
+        const etiqueta = ETIQUETAS_NUTRIENTE[precio.nutriente] || precio.nutriente;
+        const unidad = precio.unidad === "kcal" ? "kcal" : "g";
+
+        const item = document.createElement("li");
+        item.className = "space-y-1";
+
+        const fila = document.createElement("div");
+        fila.className = "flex items-baseline justify-between gap-2 text-xs";
+
+        const nombre = document.createElement("span");
+        nombre.className = "text-slate-600";
+        nombre.textContent = `${etiqueta} (${
+            precio.tipo === "minimo" ? "mínimo" : "máximo"
+        })`;
+
+        const monto = document.createElement("span");
+        monto.className =
+            valor === 0
+                ? "font-semibold text-slate-400"
+                : "font-semibold text-emerald-700";
+        monto.textContent =
+            valor === 0
+                ? "sin efecto"
+                : `${valor > 0 ? "+" : "−"}$${Math.abs(valor).toFixed(
+                      4
+                  )} / +100 ${unidad}`;
+
+        fila.append(nombre, monto);
+
+        const barra = document.createElement("div");
+        barra.className = "sens-bar";
+        const relleno = document.createElement("span");
+        relleno.style.width = `${Math.max(
+            4,
+            (Math.abs(valor) / maximo) * 100
+        )}%`;
+        barra.appendChild(relleno);
+
+        item.append(fila, barra);
+        lista.appendChild(item);
+    });
+}
+
+/* ===========================================================================
+   Toast de confirmación de gestos
+   =========================================================================== */
+function mostrarToast(mensaje) {
+    const toast = document.getElementById("toast");
+    if (!toast) return;
+
+    toast.textContent = mensaje;
+    toast.classList.add("is-visible");
+
+    clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(
+        () => toast.classList.remove("is-visible"),
+        1600
+    );
 }
