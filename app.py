@@ -171,6 +171,15 @@ MENSAJE_IMPOSSIBLE = (
     "con los alimentos actuales."
 )
 
+MENSAJE_PRESUPUESTO = (
+    "El presupuesto máximo especificado es insuficiente para cubrir los "
+    "requerimientos nutricionales mínimos en el plazo seleccionado."
+)
+
+# Holgura numérica para no declarar infactible un presupuesto que coincide
+# exactamente con el costo mínimo (errores de punto flotante).
+TOLERANCIA_PRESUPUESTO = 1e-6
+
 
 def cargar_alimentos() -> pd.DataFrame:
     """Lee y valida alimentos.csv una única vez al arrancar."""
@@ -204,9 +213,20 @@ CORS(app)
 class ModeloNoOptimo(Exception):
     """El solver no alcanzó el óptimo (Infeasible, Undefined, etc.)."""
 
-    def __init__(self, estado: str):
+    def __init__(
+        self,
+        estado: str,
+        motivo: str = "requerimientos",
+        costo_minimo: float | None = None,
+    ):
         super().__init__(estado)
         self.estado = estado
+        # "presupuesto" si la infeasibilidad desaparece al quitar la cota de
+        # gasto; "requerimientos" en cualquier otro caso.
+        self.motivo = motivo
+        # Costo diario mínimo cuando el problema solo es inviable por el
+        # presupuesto (se obtiene del reintento sin la cota de gasto).
+        self.costo_minimo = costo_minimo
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +518,8 @@ def construir_problema(
     # 1) Presupuesto máximo: cota superior del costo total.
     if presupuesto_maximo is not None:
         problema += (
-            pulp.lpSum(df.loc[i, "Costo"] * x[i] for i in x) <= presupuesto_maximo,
+            pulp.lpSum(df.loc[i, "Costo"] * x[i] for i in x)
+            <= presupuesto_maximo + TOLERANCIA_PRESUPUESTO,
             "Presupuesto_Maximo",
         )
 
@@ -561,7 +582,20 @@ def resolver_dieta(
     # solución que reportar. Se propaga como excepción para que la capa HTTP
     # decida el código de respuesta.
     if problema.status != pulp.LpStatusOptimal:
-        raise ModeloNoOptimo(estado)
+        motivo = "requerimientos"
+        costo_minimo = None
+
+        # ¿El culpable es el presupuesto? Reintentamos sin la cota de gasto:
+        # si así sí hay óptimo, la infeasibilidad venía del presupuesto. De
+        # paso, ese óptimo es el costo diario mínimo del perfil.
+        if presupuesto_maximo is not None:
+            problema.constraints.pop("Presupuesto_Maximo", None)
+            problema.solve(pulp.PULP_CBC_CMD(msg=False))
+            if problema.status == pulp.LpStatusOptimal:
+                motivo = "presupuesto"
+                costo_minimo = round(float(pulp.value(problema.objective)), 2)
+
+        raise ModeloNoOptimo(estado, motivo, costo_minimo)
 
     # --- Extracción de resultados ---
     # int(...) porque las variables ya son enteras (evita devolver 7.0).
@@ -691,6 +725,59 @@ def resolver_con_sensibilidad(parametros: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 6. ENDPOINTS
 # ---------------------------------------------------------------------------
+def respuesta_no_optima(error: ModeloNoOptimo):
+    """
+    Traduce un fallo del modelo a una respuesta 422 con mensaje útil.
+
+    Si el presupuesto es la causa, se lo decimos al usuario con un texto
+    explícito y un código que el frontend puede detectar.
+    """
+    if error.motivo == "presupuesto":
+        respuesta = {
+            "estado": "Error",
+            "codigo": "presupuesto_insuficiente",
+            "mensaje": MENSAJE_PRESUPUESTO,
+        }
+        if error.costo_minimo is not None:
+            # Costo diario mínimo del perfil sin la cota de gasto. El frontend
+            # lo multiplica por el plazo para sugerir el total del periodo.
+            respuesta["costo_minimo_diario"] = error.costo_minimo
+        return jsonify(respuesta), 422
+
+    return (
+        jsonify(
+            {
+                "estado": "Error",
+                "codigo": "requerimientos_imposibles",
+                "mensaje": MENSAJE_IMPOSSIBLE,
+            }
+        ),
+        422,
+    )
+
+
+def respuesta_error_solver(error, payload):
+    """
+    Un error del solver con presupuesto activo se reporta como presupuesto
+    insuficiente (422); sin presupuesto, como fallo interno (500).
+    """
+    app.logger.error("Error del solver: %s", error)
+
+    if isinstance(payload, dict) and payload.get("presupuesto_maximo") is not None:
+        return (
+            jsonify(
+                {
+                    "estado": "Error",
+                    "codigo": "presupuesto_insuficiente",
+                    "mensaje": MENSAJE_PRESUPUESTO,
+                }
+            ),
+            422,
+        )
+
+    return jsonify({"error": f"Error del solver: {error}"}), 500
+
+
 @app.post("/optimizar")
 def optimizar():
     payload = request.get_json(silent=True)  # None si el body no es JSON
@@ -708,12 +795,14 @@ def optimizar():
         # Resultado matemático válido: el sistema de restricciones es
         # incompatible. Se registra el estado real del solver para depurar.
         app.logger.warning(
-            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+            "Modelo no óptimo (%s, motivo=%s) con payload=%s",
+            error.estado,
+            error.motivo,
+            payload,
         )
-        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
+        return respuesta_no_optima(error)
     except pulp.PulpSolverError as error:
-        # Falla interna del solver (no del modelo): 500.
-        return jsonify({"error": f"Error del solver: {error}"}), 500
+        return respuesta_error_solver(error, payload)
 
     return jsonify(resultado), 200
 
@@ -743,13 +832,17 @@ def optimizar_perfil():
         # Datos faltantes o inválidos: 400.
         return jsonify({"error": str(error)}), 400
     except ModeloNoOptimo as error:
-        # Perfil válido pero metas imposibles con los alimentos actuales.
+        # Perfil válido pero metas imposibles con los alimentos actuales
+        # (o presupuesto insuficiente para cumplirlas).
         app.logger.warning(
-            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+            "Modelo no óptimo (%s, motivo=%s) con payload=%s",
+            error.estado,
+            error.motivo,
+            payload,
         )
-        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
+        return respuesta_no_optima(error)
     except pulp.PulpSolverError as error:
-        return jsonify({"error": f"Error del solver: {error}"}), 500
+        return respuesta_error_solver(error, payload)
 
     return jsonify(resultado), 200
 
@@ -774,11 +867,14 @@ def sensibilidad():
         return jsonify({"error": str(error)}), 400
     except ModeloNoOptimo as error:
         app.logger.warning(
-            "Modelo no óptimo (%s) con payload=%s", error.estado, payload
+            "Modelo no óptimo (%s, motivo=%s) con payload=%s",
+            error.estado,
+            error.motivo,
+            payload,
         )
-        return jsonify({"estado": "Error", "mensaje": MENSAJE_IMPOSSIBLE}), 422
+        return respuesta_no_optima(error)
     except pulp.PulpSolverError as error:
-        return jsonify({"error": f"Error del solver: {error}"}), 500
+        return respuesta_error_solver(error, payload)
 
     return (
         jsonify(

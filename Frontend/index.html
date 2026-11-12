@@ -188,7 +188,7 @@
                         </span>
                     </div>
                     <input id="presupuesto" type="range" min="1" max="100" step="1" value="5">
-                    <p class="mt-1 text-[11px] text-slate-400">Costo total que no puede superar la cesta.</p>
+                    <p class="mt-1 text-[11px] text-slate-400">Costo total del periodo. El tope se amplía al elegir 7 o 30 días.</p>
                 </div>
 
                 <!-- Plazo -->
@@ -203,6 +203,21 @@
                                 data-group="plazo" data-value="30" aria-pressed="false">30 Días</button>
                     </div>
                     <p class="mt-1 text-[11px] text-slate-400">El costo y los macros se multiplican por el plazo elegido.</p>
+                </fieldset>
+
+                <!-- Tasa BCV -->
+                <fieldset class="mb-6">
+                    <legend class="mb-2 text-sm font-medium text-slate-600">Tasa BCV (Bs. por 1 USD)</legend>
+                    <div class="flex items-center justify-between gap-2 rounded-2xl border border-slate-200 px-4 py-2.5">
+                        <label for="tasa-val" class="text-sm text-slate-500">1 USD equivale a</label>
+                        <span class="flex items-baseline gap-1">
+                            <input id="tasa-val" type="number" inputmode="decimal" min="0" step="0.01" value="36.00"
+                                   aria-label="Tasa BCV en bolívares por dólar"
+                                   class="w-24 border-0 bg-transparent p-0 text-right text-sm font-bold text-emerald-700 outline-none ring-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none">
+                            <span class="text-sm text-slate-500">Bs.</span>
+                        </span>
+                    </div>
+                    <p class="mt-1 text-[11px] text-slate-400">Solo afecta la conversión a bolívares; el cálculo se hace en dólares.</p>
                 </fieldset>
 
                 <!-- Obligatorios -->
@@ -266,7 +281,9 @@
                 <div class="rounded-3xl bg-gradient-to-br from-emerald-600 to-teal-700 p-5 text-white shadow-card">
                     <p class="text-[11px] uppercase tracking-widest text-emerald-100">Costo total estimado</p>
                     <p id="res-costo" class="mt-1 text-3xl font-bold">$0.00</p>
+                    <p id="res-costo-ves" class="text-lg font-semibold text-emerald-50">Bs. 0,00</p>
                     <p id="res-periodo" class="text-xs text-emerald-100">Total para 1 día</p>
+                    <p id="res-tasa" class="text-[11px] text-emerald-100/80">Tasa BCV: 36,00 Bs./USD</p>
 
                     <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                         <div class="rounded-2xl bg-white/10 px-3 py-2">

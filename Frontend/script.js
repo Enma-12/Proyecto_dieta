@@ -12,11 +12,26 @@ const API_BASE = "http://127.0.0.1:5000";
 const URL_ALIMENTOS = `${API_BASE}/alimentos`;
 const URL_OPTIMIZAR = `${API_BASE}/optimizar_perfil`;
 
+const MENSAJE_PRESUPUESTO_UI =
+    "El presupuesto ingresado es insuficiente para cubrir los requerimientos de este perfil en el plazo seleccionado. Prueba aumentando el presupuesto o reduciendo el plazo.";
+
+// Tasa BCV de referencia (editable). El cálculo de la dieta siempre se hace en
+// USD; la tasa solo se usa para mostrar el equivalente en bolívares.
+const TASA_POR_DEFECTO = 36.0;
+const CLAVE_TASA = "nutricost.tasa";
+const CLAVE_TASAS_ANTIGUA = "nutricost.tasas";
+
+// Tope del presupuesto TOTAL según el plazo. El backend optimiza por día, así
+// que el tope diario equivalente es 100 / 28,6 / 20 USD para 1 / 7 / 30 días.
+const TOPES_PRESUPUESTO = { 1: 100, 7: 200, 30: 600 };
+
 const state = {
     genero: "hombre",
     objetivo: "mantener",
     actividad: 1.55,
     plazo: 1,
+    tasa: TASA_POR_DEFECTO,
+    costoUSD: 0,
     obligatorios: new Set(),
     excluidos: new Set(),
 };
@@ -46,6 +61,11 @@ const numberFmt = (value, decimals = 0) =>
         maximumFractionDigits: decimals,
     }).format(Number(value) || 0);
 
+const numeroBs = new Intl.NumberFormat("es-VE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+});
+
 const multiselects = {};
 let ultimoResultado = null;
 let macroChart = null;
@@ -64,6 +84,9 @@ document.addEventListener("DOMContentLoaded", init);
 function init() {
     bindSliders();
     bindChips();
+    cargarTasa();
+    bindTasa();
+    actualizarTopePresupuesto();
     initMultiselect("obligatorios");
     initMultiselect("excluidos");
     initGestures();
@@ -182,8 +205,35 @@ function seleccionarChip(chip) {
 
     // Si ya hay una cesta en pantalla, refrescamos el multiplicador sin
     // volver a llamar al backend (que siempre trabaja a 1 día).
-    if (grupo === "plazo" && ultimoResultado) {
-        renderResultados(ultimoResultado, { scroll: false });
+    if (grupo === "plazo") {
+        // El presupuesto es el total del periodo: el tope crece con el plazo
+        // para que los perfiles de muchas calorías sigan siendo alcanzables.
+        actualizarTopePresupuesto();
+        if (ultimoResultado) {
+            renderResultados(ultimoResultado, { scroll: false });
+        }
+    }
+}
+
+function actualizarTopePresupuesto() {
+    const plazo = Number(state.plazo) || 1;
+    const tope = TOPES_PRESUPUESTO[plazo] ?? TOPES_PRESUPUESTO[1];
+
+    const range = document.getElementById("presupuesto");
+    const numero = document.getElementById("presupuesto-val");
+    if (!range) return;
+
+    range.max = String(tope);
+    if (Number(range.value) > tope) {
+        range.value = String(tope);
+    }
+    actualizarRelleno(range);
+
+    if (numero) {
+        numero.max = String(tope);
+        if (Number(numero.value) > tope) {
+            numero.value = formatearValor(range, range.value);
+        }
     }
 }
 
@@ -191,6 +241,119 @@ function aplicarEstadoChip(chip, activo) {
     chip.setAttribute("aria-pressed", String(activo));
     chip.classList.remove(...CHIP_ACTIVE, ...CHIP_INACTIVE);
     chip.classList.add(...(activo ? CHIP_ACTIVE : CHIP_INACTIVE));
+}
+
+/* ===========================================================================
+   Tasa BCV (USD -> VES)
+   =========================================================================== */
+function tasaActiva() {
+    return Number(state.tasa) || 0;
+}
+
+function formatearBs(valor) {
+    return `Bs. ${numeroBs.format(Number(valor) || 0)}`;
+}
+
+function cargarTasa() {
+    try {
+        const guardada = Number(localStorage.getItem(CLAVE_TASA));
+        if (Number.isFinite(guardada) && guardada > 0) {
+            state.tasa = guardada;
+        } else {
+            // Migración desde la versión anterior (BCV / Paralelo): se conserva
+            // la tasa BCV que el usuario ya tenía guardada.
+            const antiguas = JSON.parse(
+                localStorage.getItem(CLAVE_TASAS_ANTIGUA) || "null"
+            );
+            const bcv = Number(antiguas?.bcv);
+            if (Number.isFinite(bcv) && bcv > 0) {
+                state.tasa = bcv;
+                guardarTasa();
+            }
+        }
+    } catch (error) {
+        // localStorage no disponible (modo privado) o JSON corrupto: se usa
+        // el valor por defecto sin interrumpir la app.
+        console.warn("No se pudo cargar la tasa guardada:", error);
+    }
+
+    actualizarTasaUI();
+}
+
+function guardarTasa() {
+    try {
+        localStorage.setItem(CLAVE_TASA, String(state.tasa));
+    } catch (error) {
+        console.warn("No se pudo guardar la tasa:", error);
+    }
+}
+
+function actualizarTasaUI() {
+    const input = document.getElementById("tasa-val");
+    if (input) {
+        input.value = tasaActiva() > 0 ? tasaActiva().toFixed(2) : "";
+    }
+    actualizarEtiquetaTasa();
+}
+
+function actualizarEtiquetaTasa() {
+    const etiqueta = document.getElementById("res-tasa");
+    if (!etiqueta) return;
+
+    const tasa = tasaActiva();
+    etiqueta.textContent =
+        tasa > 0
+            ? `Tasa BCV: ${numeroBs.format(tasa)} Bs./USD`
+            : "Tasa BCV: sin definir";
+}
+
+function actualizarEquivalenteVES() {
+    const salida = document.getElementById("res-costo-ves");
+    if (!salida) return;
+
+    const tasa = tasaActiva();
+    salida.textContent = tasa > 0 ? formatearBs(state.costoUSD * tasa) : "—";
+
+    actualizarEtiquetaTasa();
+}
+
+function bindTasa() {
+    const input = document.getElementById("tasa-val");
+    if (!input) return;
+
+    input.addEventListener("input", () => {
+        const valor = Number(input.value);
+        // Campo vacío o inválido: el equivalente se muestra como "—" hasta
+        // que el usuario escriba un número válido.
+        if (input.value.trim() === "" || !Number.isFinite(valor) || valor <= 0) {
+            state.tasa = 0;
+            guardarTasa();
+            actualizarEquivalenteVES();
+            return;
+        }
+
+        state.tasa = valor;
+        guardarTasa();
+        actualizarEquivalenteVES();
+    });
+
+    input.addEventListener("blur", () => {
+        // Al salir, normalizamos a 2 decimales o restauramos el valor por
+        // defecto si el campo quedó vacío.
+        if (!(Number(input.value) > 0)) {
+            state.tasa = TASA_POR_DEFECTO;
+            guardarTasa();
+        }
+        actualizarTasaUI();
+        actualizarEquivalenteVES();
+    });
+
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            input.blur();
+        }
+    });
 }
 
 /* ===========================================================================
@@ -371,6 +534,37 @@ async function cargarAlimentos() {
     }
 }
 
+function esErrorDePresupuesto(data) {
+    if (!data || typeof data !== "object") return false;
+    if (data.codigo === "presupuesto_insuficiente") return true;
+
+    // Respaldo por si el backend no envía el código.
+    const texto = `${data.mensaje || ""} ${data.error || ""}`;
+    return /presupuesto/i.test(texto) && /insuficiente|no alcanza|insuficientes/i.test(texto);
+}
+
+function mensajeDeError(data, status) {
+    if (esErrorDePresupuesto(data)) {
+        const minimo = Number(data.costo_minimo_diario);
+        if (Number.isFinite(minimo) && minimo > 0) {
+            const plazo = Number(state.plazo) || 1;
+            // El slider avanza de $1 en $1: redondeamos hacia arriba para que
+            // el total sugerido sea realmente seleccionable.
+            const total = Math.ceil(minimo * plazo);
+            const periodo = plazo === 1 ? "1 día" : `${plazo} días`;
+            return (
+                "El presupuesto ingresado es insuficiente para cubrir los " +
+                "requerimientos de este perfil en el plazo seleccionado. " +
+                `Necesitas al menos ${money.format(minimo)}/día ` +
+                `(${money.format(total)} para ${periodo}). ` +
+                "Prueba aumentando el presupuesto o reduciendo el plazo."
+            );
+        }
+        return MENSAJE_PRESUPUESTO_UI;
+    }
+    return data.mensaje || data.error || `Error ${status} al calcular la dieta.`;
+}
+
 async function calcularDieta() {
     ocultarAlerta();
 
@@ -404,9 +598,7 @@ async function calcularDieta() {
         const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-            throw new Error(
-                data.mensaje || data.error || `Error ${response.status} al calcular la dieta.`
-            );
+            throw new Error(mensajeDeError(data, response.status));
         }
 
         if (data.estado !== "Optimal" || !Array.isArray(data.alimentos)) {
@@ -439,9 +631,12 @@ function renderResultados(data, { scroll = true } = {}) {
     const macro = data.resumen_nutricional || {};
     const escalar = (valor) => Math.round((Number(valor) || 0) * plazo * 100) / 100;
 
-    document.getElementById("res-costo").textContent = money.format(escalar(data.costo_total));
+    state.costoUSD = escalar(data.costo_total);
+
+    document.getElementById("res-costo").textContent = money.format(state.costoUSD);
     document.getElementById("res-periodo").textContent =
         plazo === 1 ? "Total para 1 día" : `Total para ${plazo} días`;
+    actualizarEquivalenteVES();
     document.getElementById("res-calorias").textContent = `${numberFmt(escalar(macro.Calorias))} kcal`;
     document.getElementById("res-proteinas").textContent = `${numberFmt(escalar(macro.Proteinas))} g`;
     document.getElementById("res-carbohidratos").textContent = `${numberFmt(escalar(macro.Carbohidratos))} g`;
@@ -552,6 +747,9 @@ function renderMacroChart({ proteinas, carbohidratos, grasas }) {
 
 function crearTarjeta(item, index) {
     const porciones = Number(item.porciones) || 0;
+    // En alimentos.csv los macros y el costo están por 100 g y el modelo
+    // trabaja con "porciones" de 100 g: gramos = porciones × 100.
+    const gramos = porciones * 100;
 
     const card = document.createElement("article");
     card.className =
@@ -573,9 +771,17 @@ function crearTarjeta(item, index) {
     cabecera.append(nombre, subtotal);
 
     const datos = document.createElement("div");
-    datos.className = "mt-3 grid grid-cols-1 gap-2";
+    datos.className = "mt-3 space-y-0.5";
 
-    datos.append(crearDato("Porciones", String(porciones)));
+    // Gramos como dato principal (más intuitivo que fracciones de porción),
+    // porciones como referencia de la unidad que usa el modelo.
+    datos.append(
+        crearDato("Cantidad", `${numberFmt(gramos)} g`, true),
+        crearDato(
+            "Porciones",
+            `${numberFmt(porciones, 2)} ${porciones === 1 ? "porción" : "porciones"}`
+        )
+    );
 
     // Respaldo accesible del gesto de pulsación larga.
     const botonDetalle = document.createElement("button");
@@ -599,16 +805,22 @@ function crearTarjeta(item, index) {
     return card;
 }
 
-function crearDato(etiqueta, valor) {
+function crearDato(etiqueta, valor, destacado = false) {
     const caja = document.createElement("div");
-    caja.className = "rounded-xl bg-slate-50 px-3 py-2";
+    caja.className = destacado
+        ? "rounded-xl bg-slate-50 px-3 py-2"
+        : "flex items-baseline gap-1.5 px-3";
 
     const titulo = document.createElement("span");
-    titulo.className = "block text-[10px] uppercase tracking-wide text-slate-400";
+    titulo.className = destacado
+        ? "block text-[10px] uppercase tracking-wide text-slate-400"
+        : "shrink-0 text-[10px] uppercase tracking-wide text-slate-400";
     titulo.textContent = etiqueta;
 
     const contenido = document.createElement("strong");
-    contenido.className = "text-sm text-slate-700";
+    contenido.className = destacado
+        ? "text-xl font-bold text-slate-800"
+        : "text-xs font-medium text-slate-500";
     contenido.textContent = valor;
 
     caja.append(titulo, contenido);
@@ -772,15 +984,17 @@ function abrirSheet(item) {
     if (!sheet || !backdrop || !titulo || !body) return;
 
     const porciones = Number(item.porciones) || 0;
+    const gramos = porciones * 100;
     const escalar = (valor) => (Number(valor) || 0) * porciones;
 
     titulo.textContent = item.alimento;
     body.replaceChildren();
 
     body.append(
+        crearDato("Cantidad", `${numberFmt(gramos)} g`, true),
         crearDato(
             "Porciones",
-            `${porciones} ${porciones === 1 ? "porción" : "porciones"}`
+            `${numberFmt(porciones, 2)} ${porciones === 1 ? "porción" : "porciones"}`
         ),
         crearDato("Costo subtotal", money.format(Number(item.costo_subtotal) || 0)),
         crearDato("Calorías (total)", `${numberFmt(escalar(item.calorias))} kcal`),

@@ -12,6 +12,9 @@ de explicabilidad del motor de decisión.
 - **Motor de decisión MILP:** Programación Lineal Entera Mixta resuelta con `PuLP` + CBC.
 - **Perfil antropométrico:** TMB (Mifflin-St Jeor), TDEE, ajuste por objetivo y reparto de macros.
 - **Restricciones reales:** mínimos de calorías/proteínas/carbohidratos, techos de carbohidratos y grasas, máximo de porciones por alimento, presupuesto y listas de alimentos obligatorios/excluidos.
+- **Presupuesto por periodo:** el monto ingresado es el total del plazo elegido (1, 7 o 30 días); el frontend envía al backend el equivalente diario (`presupuesto / plazo`) y multiplica el resultado por el plazo. El tope del presupuesto crece con el plazo ($100 / $200 / $600) para que los perfiles de muchas calorías sigan siendo alcanzables.
+- **Tasa BCV USD → VES:** campo editable con los bolívares por dólar y equivalente en bolívares del costo total, actualizado al instante sin repetir la consulta. La tasa se guarda en `localStorage`.
+- **Cantidades en gramos:** cada tarjeta muestra los gramos como dato principal (`porciones × 100 g`) y las porciones como referencia.
 - **Interfaz gestual:** swipe, pulsación larga, pinch y doble toque con Pointer Events (sin librerías externas) y respaldo accesible por botones.
 - **Explicabilidad:** precios sombra (duales) que indican qué nutriente encarece la dieta y panel “¿Cómo se calcula?”.
 - **API REST:** backend Flask + frontend separado con CORS.
@@ -35,7 +38,7 @@ de explicabilidad del motor de decisión.
 Proyecto_dieta/
 ├── app.py               # API Flask + modelo MILP + sensibilidad
 ├── modelo.py            # Versión consola del mismo modelo
-├── alimentos.csv        # Dataset: costo y macros por porción
+├── alimentos.csv        # Dataset: costo y macros por 100 g de cada alimento
 ├── Frontend/
 │   ├── index.html       # Interfaz (zonas, hoja de detalle, panel del motor)
 │   ├── style.css        # Ergonomía táctil, hoja inferior y barras
@@ -104,6 +107,31 @@ Detalles de implementación:
 
 ---
 
+## 💱 Tasa BCV (USD → VES)
+
+La app calcula y envía todo en **dólares**; la conversión a bolívares es solo de
+presentación.
+
+- En **Tus reglas** hay un campo **Tasa BCV (Bs. por 1 USD)** donde el usuario
+  escribe cuántos bolívares equivalen a un dólar.
+- El valor inicial es de referencia (`36,00`) y se edita libremente.
+- La tasa se persiste en `localStorage` (`nutricost.tasa`), por lo que se conserva
+  al recargar. Si existe la clave antigua `nutricost.tasas`, se migra la tasa BCV.
+  En modo privado la app sigue funcionando con el valor por defecto.
+- El resumen muestra el costo en USD, el equivalente `Bs. X.XXX,XX` y la tasa
+  aplicada (`Tasa BCV: 36,00 Bs./USD`).
+- El equivalente se recalcula al instante al cambiar la tasa, el plazo o el
+  resultado, **sin volver a llamar a la API**.
+- Si la tasa queda vacía o en cero, el equivalente se muestra como `—`.
+
+Fórmula:
+
+```
+Monto en bolívares (VES) = Costo total en USD × Tasa BCV (Bs./USD)
+```
+
+---
+
 ## 🧮 Modelo matemático
 
 Variables de decisión (porciones del alimento *i*):
@@ -111,6 +139,9 @@ Variables de decisión (porciones del alimento *i*):
 ```
 x_i ∈ ℤ,   0 ≤ x_i ≤ M
 ```
+
+> En `alimentos.csv` cada fila son **100 g** del alimento: los macros y el costo
+> están expresados por 100 g. Por eso el frontend muestra `gramos = porciones × 100`.
 
 Función objetivo (minimizar el costo total):
 
@@ -136,6 +167,10 @@ x_i ≥ 1   para cada alimento obligatorio
 x_i = 0   para cada alimento excluido
 ```
 
+> El backend optimiza siempre para **1 día**. El frontend divide el presupuesto del
+> periodo entre el plazo (`presupuesto_maximo = presupuesto_total / plazo`) y luego
+> multiplica costo, macros y porciones por el plazo para mostrarlos.
+
 ---
 
 ## 🧠 Técnica / motor explicado
@@ -143,7 +178,7 @@ x_i = 0   para cada alimento excluido
 ### 1. ¿Por qué es MILP y no LP?
 
 Las restricciones son lineales, pero las variables son **enteras**: no se compran
-2.37 huevos. Un MILP se resuelve con **branch-and-bound**:
+2.37 porciones. Un MILP se resuelve con **branch-and-bound**:
 
 1. Se resuelve la relajación lineal (`x_i` reales) → cota inferior del costo.
 2. Si la solución tiene fracciones, se ramifica (`x_i ≤ ⌊x_i⌋` y `x_i ≥ ⌈x_i⌉`).
@@ -157,7 +192,7 @@ El óptimo entero es siempre **mayor o igual** al continuo; la diferencia es el
 `x_i ≤ M` es una cota de caja declarada en la variable (`upBound`), no como
 restricción. Aporta:
 
-- **Realismo:** evita dietas absurdas tipo “10 huevos al día”.
+- **Realismo:** evita dietas absurdas tipo “10 porciones del mismo alimento al día”.
 - **Eficiencia:** reduce el espacio de búsqueda.
 - **Acotación:** al minimizar, el problema no puede ser no acotado.
 
@@ -180,6 +215,10 @@ Si las restricciones se contradicen (por ejemplo, `min_carbohidratos >
 max_carbohidratos`, o un `M` demasiado pequeño para alcanzar las calorías), el
 politopo factible es vacío y el solver devuelve `Infeasible`. **No es un error del
 programa:** es un resultado matemático válido que la API reporta como HTTP `422`.
+
+Lo mismo ocurre si el presupuesto diario es demasiado bajo para cubrir los mínimos
+nutricionales: el modelo resulta infactible y la API responde `422`. En ese caso
+conviene subir el presupuesto o reducir el plazo.
 
 ### 5. ¿Esto es inteligencia artificial?
 
@@ -261,16 +300,37 @@ Respuesta (resumida):
 |---|---|
 | `200` | Solución óptima |
 | `400` | Datos faltantes o inválidos |
-| `422` | Requerimientos matemáticamente imposibles |
+| `422` | Requerimientos o presupuesto imposibles (ver `codigo` abajo) |
 | `500` | Fallo interno del solver |
+
+Los `422` incluyen un campo `codigo` para que el frontend distinga el motivo:
+
+| `codigo` | `mensaje` |
+|---|---|
+| `presupuesto_insuficiente` | El presupuesto máximo especificado es insuficiente para cubrir los requerimientos nutricionales mínimos en el plazo seleccionado. |
+| `requerimientos_imposibles` | Tus requerimientos son matemáticamente imposibles de cumplir con los alimentos actuales. |
+
+Cuando el motivo es el presupuesto, la respuesta incluye además
+`costo_minimo_diario`: el costo mínimo que necesita el perfil sin la cota de gasto.
+El frontend lo multiplica por el plazo y muestra, por ejemplo:
+
+> “Necesitas al menos $4.86/día ($146.00 para 30 días). Prueba aumentando el
+> presupuesto o reduciendo el plazo.”
+
+El backend detecta el caso de presupuesto reintentando el modelo **sin** la cota de
+gasto: si así encuentra óptimo, la infeasibilidad venía del presupuesto. La
+restricción usa una tolerancia numérica (`1e-6`) para no rechazar un presupuesto que
+coincide exactamente con el costo mínimo.
 
 ---
 
 ## ⚠️ Limitaciones y trabajo futuro
 
 - El dataset usa precios de referencia; no está conectado a un mercado real.
-- Las porciones son enteras y dependen de la unidad implícita de `alimentos.csv`.
+- Las porciones son enteras y cada una equivale a 100 g de `alimentos.csv`; no hay
+  pesos de porción propios por alimento (p. ej. “1 huevo”).
+- La tasa BCV es manual: no se consulta en línea, la actualiza el usuario.
 - El análisis de sensibilidad usa la relajación lineal: es una aproximación local del
   efecto marginal, no una predicción exacta del MILP.
-- Trabajo futuro: recomendador de alimentos similares (KNN), precios dinámicos y
-  perfiles de usuario persistidos.
+- Trabajo futuro: tasas en vivo vía API, recomendador de alimentos similares (KNN),
+  precios dinámicos y perfiles de usuario persistidos.
